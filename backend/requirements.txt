@@ -79,3 +79,4 @@ uvicorn
 yarl
 zipp
 psycopg[binary]
+psycopg2
