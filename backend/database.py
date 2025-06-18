@@ -6,25 +6,24 @@ from models import Base, User
 
 logger = logging.getLogger(__name__)
 
-# Database configuration for PostgreSQL
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable is required")
 
-# Create the SQLAlchemy engine for PostgreSQL
+if DATABASE_URL.startswith("postgresql+psycopg2://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql+psycopg2://", "postgresql+psycopg://")
+
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,  # Ensure connections are valid before use
-    pool_size=5,        # Adjust pool size as needed
-    max_overflow=10     # Allow extra connections if needed
+    pool_pre_ping=True,
+    pool_size=5,
+    max_overflow=10
 )
 
-# Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def create_tables():
-    """Create all database tables"""
     try:
         Base.metadata.create_all(bind=engine, checkfirst=True)
         logger.info("Database tables created successfully")
@@ -33,7 +32,6 @@ def create_tables():
         raise
 
 def get_db():
-    """Dependency to get database session"""
     db = SessionLocal()
     try:
         yield db
@@ -41,12 +39,11 @@ def get_db():
         db.close()
 
 def test_connection():
-    """Test database connection"""
     try:
         with Session(engine) as session:
             stmt = select(User)
             result = session.execute(stmt)
-            result.fetchall()  # Force execution
+            result.fetchall()
             logger.info("Database connection successful")
             return True
     except Exception as e:
