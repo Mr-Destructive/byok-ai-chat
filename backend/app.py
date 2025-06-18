@@ -355,12 +355,9 @@ class AIProviderClient:
 # App Initialization
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Test database connection
     if not test_connection():
-        logger.error("Failed to connect to Turso database")
+        logger.error("Failed to connect to PostgreSQL database")
         raise RuntimeError("Database connection failed")
-    
-    # Create tables
     create_tables()
     logger.info("Application startup complete")
     yield
