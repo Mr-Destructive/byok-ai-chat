@@ -907,7 +907,21 @@ from sqlalchemy.orm import Session
 import sqlalchemy as sa
 import logging
 
-STREAMING_CACHE = {}  # Global cache for streaming responses
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+import json
+import uuid
+import asyncio
+from datetime import datetime
+from typing import Optional
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+import sqlalchemy as sa
+import logging
+import litellm
+
+# Global cache for streaming responses
+STREAMING_CACHE = {}  # {stream_id: [chunks]}
 
 class ChatRequest(BaseModel):
     message: str
@@ -925,39 +939,23 @@ async def chat(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # 1. Try exact provider+model match
+    # Find API key
     api_key_record = db.query(APIKey).filter(
         APIKey.user_id == current_user.id,
         APIKey.provider == chat_request.provider,
-        APIKey.model_name == chat_request.model_name,
+        or_(APIKey.model_name == chat_request.model_name, APIKey.model_name.in_(['*', ''])),
         APIKey.is_active == True
     ).first()
-
-    # 2. Try provider-wide key (model_name == '*' or '')
-    if not api_key_record:
-        api_key_record = db.query(APIKey).filter(
-            APIKey.user_id == current_user.id,
-            APIKey.provider == chat_request.provider,
-            APIKey.model_name.in_(['*', '']),
-            APIKey.is_active == True
-        ).first()
-
-    # 3. Fallback: any active key for provider
-    if not api_key_record:
-        api_key_record = db.query(APIKey).filter(
-            APIKey.user_id == current_user.id,
-            APIKey.provider == chat_request.provider,
-            APIKey.is_active == True
-        ).first()
 
     if not api_key_record:
         raise HTTPException(
             status_code=400,
-            detail=f"No active API key found for provider: {chat_request.provider}. Please add one in the API Keys tab."
+            detail=f"No active API key found for provider: {chat_request.provider}"
         )
 
     api_key = decrypt_api_key(api_key_record.encrypted_key)
     
+    # Handle thread creation
     if chat_request.thread_id:
         thread = db.query(Thread).filter(
             Thread.id == chat_request.thread_id,
@@ -976,40 +974,31 @@ async def chat(
         db.commit()
         db.refresh(thread)
     
-    # Check if columns exist
-    has_parent_column = True
-    try:
-        db.execute(sa.text("SELECT parent_message_id FROM messages LIMIT 1"))
-    except sa.exc.OperationalError:
-        has_parent_column = False
+    # Check for optional columns
+    has_branch_column = hasattr(Message, 'branch_id')
+    has_parent_column = hasattr(Message, 'parent_message_id')
     
-    has_branch_column = True
-    try:
-        db.execute(sa.text("SELECT branch_id FROM messages LIMIT 1"))
-    except sa.exc.OperationalError:
-        has_branch_column = False
-    
-    # Build user message dynamically
+    # Build user message
     user_message_kwargs = {
         "thread_id": thread.id,
         "role": "user",
         "content": chat_request.message,
         "created_at": datetime.utcnow(),
     }
-    if has_parent_column and chat_request.branch_id and has_branch_column:
-        last_message = db.query(Message).filter(
-            Message.thread_id == thread.id,
-            Message.branch_id == chat_request.branch_id,
-            Message.created_at < datetime.utcnow()
-        ).order_by(Message.created_at.desc()).first()
-        if last_message:
-            user_message_kwargs["parent_message_id"] = last_message.id
-    if has_branch_column:
+    if has_branch_column and chat_request.branch_id:
         user_message_kwargs["branch_id"] = chat_request.branch_id
+        if has_parent_column:
+            last_message = db.query(Message).filter(
+                Message.thread_id == thread.id,
+                Message.branch_id == chat_request.branch_id
+            ).order_by(Message.created_at.desc()).first()
+            if last_message:
+                user_message_kwargs["parent_message_id"] = last_message.id
     
     user_message = Message(**user_message_kwargs)
     db.add(user_message)
     db.commit()
+    db.refresh(user_message)
     
     # Fetch conversation history
     columns = [
@@ -1036,273 +1025,69 @@ async def chat(
         for msg in messages
     ]
     
-    from litellm import completion
-    
     async def generate_response():
         response_content = ""
-        max_retries = 1
-        retry_count = 0
         stream_id = chat_request.stream_id or str(uuid.uuid4())
         start_chunk = chat_request.resume_from_chunk or 0
         
-        # Initialize cache for this stream_id
         if stream_id not in STREAMING_CACHE:
             STREAMING_CACHE[stream_id] = []
         
-        def extract_content_from_chunk(chunk):
-            if not chunk:
-                logger.warning("Empty chunk received")
-                return ""
-            
-            logger.debug(f"Chunk type: {type(chunk)}, Chunk: {chunk}")
-            
-            # Handle string
-            if isinstance(chunk, str):
-                return chunk
-            
-            # Handle dict
-            if isinstance(chunk, dict):
-                for key in ['content', 'text', 'message', 'delta']:
-                    if key in chunk and chunk[key]:
-                        if isinstance(chunk[key], str):
-                            return chunk[key]
-                        elif isinstance(chunk[key], dict) and 'content' in chunk[key]:
-                            return chunk[key]['content'] or ""
-            
-            # Handle objects with .choices
-            if hasattr(chunk, 'choices') and chunk.choices:
-                choice = chunk.choices[0]
-                if hasattr(choice, 'delta') and choice.delta:
-                    if hasattr(choice.delta, 'content') and choice.delta.content:
-                        return choice.delta.content
-                elif hasattr(choice, 'message') and choice.message:
-                    if hasattr(choice.message, 'content') and choice.message.content:
-                        return choice.message.content
-                elif hasattr(choice, 'text') and choice.text:
-                    return choice.text
-            
-            # Handle objects with .content
-                for key in ['content', 'text', 'message', 'delta']:
-                    if key in chunk and chunk[key]:
-                        if isinstance(chunk[key], str):
-                            return chunk[key]
-                        elif isinstance(chunk[key], dict) and 'content' in chunk[key]:
-                            return chunk[key]['content'] or ""
-            
-            if hasattr(chunk, 'content'):
-                content = getattr(chunk, 'content', None)
-                if content:
-                    return content
-            
-            # Handle LiteLLM CustomStreamWrapper and similar
-            for method_name in ['text', 'read']:
-                method = getattr(chunk, method_name, None)
-                if callable(method):
-                    try:
-                        result = method()
-                        # If coroutine, run it
-                        if hasattr(result, '__await__'):
-                            import asyncio
-                            try:
-                                loop = asyncio.get_event_loop()
-                            except RuntimeError:
-                                loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(loop)
-                            result = loop.run_until_complete(result)
-                        if result:
-                            return result
-                    except Exception as e:
-                        logger.warning(f"Failed to extract content via {method_name}(): {e}")
-            # Try .complete_response (dict or string)
-            if hasattr(chunk, 'complete_response'):
-                complete = getattr(chunk, 'complete_response', None)
-                if complete:
-                    if isinstance(complete, dict):
-                        for key in ['content', 'text', 'message', 'delta']:
-                            if key in complete and complete[key]:
-                                if isinstance(complete[key], str):
-                                    return complete[key]
-                                elif isinstance(complete[key], dict) and 'content' in complete[key]:
-                                    return complete[key]['content'] or ""
-                    elif isinstance(complete, str):
-                        return complete
-            # Try .chunks (list of dicts/strings)
-            if hasattr(chunk, 'chunks'):
-                chunks = getattr(chunk, 'chunks', None)
-                if chunks and isinstance(chunks, list):
-                    for c in chunks:
-                        content = extract_content_from_chunk(c)
-                        if content:
-                            return content
-            # Fallback: str(chunk) if not default object repr
-            try:
-                s = str(chunk)
-                if s and not s.startswith('<'):
-                    return s
-            except Exception:
-                pass
-            logger.warning(f"Could not extract content from chunk: {chunk} (type: {type(chunk)}, dir: {dir(chunk)})")
-            return ""
-        
-        def process_sync_generator_safe(generator):
-            content_chunks = []
-            chunk_count = 0
-            max_chunks = 10000
-            
-            try:
-                for chunk in generator:
-                    chunk_count += 1
-                    if chunk_count > max_chunks:
-                        logger.warning(f"Hit max chunks limit ({max_chunks}), stopping iteration")
-                        break
-                        
-                    content = extract_content_from_chunk(chunk)
-                    if content:
-                        content_chunks.append(content)
-                        
-                return content_chunks
-            except Exception as e:
-                logger.error(f"Error processing sync generator: {e}")
-                return content_chunks
-        
-        # Check cache for resuming
+        # Handle cached chunks for resuming
         if start_chunk > 0 and stream_id in STREAMING_CACHE:
-            cached_chunks = STREAMING_CACHE[stream_id][start_chunk:]
-            for i, chunk in enumerate(cached_chunks):
-                yield f"data: {json.dumps({'content': chunk, 'chunk_index': start_chunk + i, 'stream_id': stream_id})}\n\n"
+            for i, chunk in enumerate(STREAMING_CACHE[stream_id][start_chunk:], start=start_chunk):
+                yield f"data: {json.dumps({'content': chunk, 'chunk_index': i, 'stream_id': stream_id})}\n\n"
                 await asyncio.sleep(0.01)
-            if cached_chunks:
-                # Do not delete cache here to allow further resumes
-                return
+            return
         
-        content_chunks = []
-        
-        import types
-        async def async_wrap_iter(sync_iter):
-            for item in sync_iter:
-                yield item
-                await asyncio.sleep(0)
-
-        error_msg = ""
-        while retry_count < max_retries:
-            try:
-                logger.info(f"Attempt {retry_count + 1}: Making request to {chat_request.model_name}")
-
-                completion_kwargs = {
-                    'model': chat_request.model_name.split(":")[0],
-                    'messages': conversation_history,
-                    'api_key': api_key,
-                    'stream': chat_request.stream,
-                    'timeout': 60,
-                }
-                if chat_request.provider.lower() == 'cohere':
-                    completion_kwargs.update({
-                        'max_tokens': 4000,
-                        'temperature': 0.7
-                    })
-
-                response = await asyncio.to_thread(completion, **completion_kwargs)
-                logger.info(f"Got response, type: {type(response)}")
-
-                if completion_kwargs.get('stream', False):
-                    # Robustly handle both async and sync generators
-                    if hasattr(response, '__aiter__'):
-                        logger.info("Processing async generator")
-                        try:
-                            async for chunk in response:
-                                content = extract_content_from_chunk(chunk)
-                                if content:
-                                    content_chunks.append(content)
-                                    STREAMING_CACHE[stream_id].append(content)
-                        except Exception as async_error:
-                            logger.error(f"Async iteration failed: {async_error}")
-                            # Try to process as sync generator via async wrapper
-                            if isinstance(response, types.GeneratorType):
-                                logger.info("Falling back to async-wrapped sync generator")
-                                async for chunk in async_wrap_iter(response):
-                                    content = extract_content_from_chunk(chunk)
-                                    if content:
-                                        content_chunks.append(content)
-                                        STREAMING_CACHE[stream_id].append(content)
-                            else:
-                                logger.warning("Response is not a generator, treating as single chunk")
-                                content = extract_content_from_chunk(response)
-                                if content:
-                                    content_chunks.append(content)
-                                    STREAMING_CACHE[stream_id].append(content)
-                    elif hasattr(response, '__iter__') and not isinstance(response, (str, bytes, dict)):
-                        logger.info("Processing sync generator")
-                        async for chunk in async_wrap_iter(response):
-                            content = extract_content_from_chunk(chunk)
-                            if content:
-                                content_chunks.append(content)
-                                STREAMING_CACHE[stream_id].append(content)
-                    else:
-                        logger.warning("Response is not a generator, treating as single chunk")
-                        content = extract_content_from_chunk(response)
-                        if content:
-                            content_chunks.append(content)
-                            STREAMING_CACHE[stream_id].append(content)
-                else:
-                    logger.info("Processing single streaming response")
-                    content = extract_content_from_chunk(response)
+        try:
+            model_identifier = f"{chat_request.provider}/{chat_request.model_name}"
+            response = await asyncio.to_thread(
+                litellm.completion,
+                model=model_identifier,
+                messages=conversation_history,
+                api_key=api_key,
+                stream=chat_request.stream,
+                timeout=60
+            )
+            
+            if chat_request.stream:
+                async for chunk in response:
+                    content = ""
+                    if hasattr(chunk, 'choices') and chunk.choices:
+                        delta = chunk.choices[0].delta
+                        content = delta.content if delta and delta.content else ""
+                    elif isinstance(chunk, dict) and 'choices' in chunk:
+                        delta = chunk['choices'][0].get('delta', {})
+                        content = delta.get('content', '')
+                    
                     if content:
-                        content_chunks = [content]
+                        response_content += content
                         STREAMING_CACHE[stream_id].append(content)
-            except Exception as e:
-                error_msg = str(e)
-                logger.error(f"Attempt {retry_count} failed: {error_msg}")
-            # Removed invalid else:
-            logger.info("Processing non-streaming response")
-            content = extract_content_from_chunk(response)
-            if content:
-                content_chunks = [content]
-                STREAMING_CACHE[stream_id].append(content)
-
-            if content_chunks:
-                logger.info(f"Successfully got {len(content_chunks)} content chunks")
-                break
-            logger.warning("No content chunks extracted, will retry with non-streaming fallback")
-            try:
-                completion_kwargs['stream'] = False
-                non_stream_response = await asyncio.to_thread(completion, **completion_kwargs)
-                content = extract_content_from_chunk(non_stream_response)
+                        yield f"data: {json.dumps({'content': content, 'chunk_index': len(STREAMING_CACHE[stream_id]) - 1, 'stream_id': stream_id})}\n\n"
+                        await asyncio.sleep(0.01)
+            else:
+                content = ""
+                if hasattr(response, 'choices') and response.choices:
+                    content = response.choices[0].message.content
+                elif isinstance(response, dict) and 'choices' in response:
+                    content = response['choices'][0]['message']['content']
+                
                 if content:
-                    content_chunks = [content]
+                    response_content = content
                     STREAMING_CACHE[stream_id].append(content)
-                    logger.info("Successfully extracted content from non-streaming fallback")
-                    break
-                else:
-                    logger.error("Non-streaming fallback also failed to extract content")
-            except Exception as fallback_error:
-                logger.error(f"Non-streaming fallback failed: {fallback_error}")
-            retry_count += 1
-
-        if retry_count >= max_retries:
-            logger.error(f"All {max_retries} attempts failed")
-            yield f"data: {json.dumps({'error': f'Request failed after {max_retries} attempts: {error_msg}', 'stream_id': stream_id})}\n\n"
-            # Safe deletion
-            if stream_id in STREAMING_CACHE:
-                del STREAMING_CACHE[stream_id]
-            return
-
-        if content_chunks:
-            for i, chunk_content in enumerate(content_chunks[start_chunk:], start=start_chunk):
-                response_content += chunk_content
-                yield f"data: {json.dumps({'content': chunk_content, 'chunk_index': i, 'stream_id': stream_id})}\n\n"
-                if chat_request.stream and len(content_chunks) > 1:
-                    await asyncio.sleep(0.01)
-        else:
-            yield f"data: {json.dumps({'error': 'No content received from AI provider after multiple attempts', 'stream_id': stream_id})}\n\n"
-            # Safe deletion
-            if stream_id in STREAMING_CACHE:
-                del STREAMING_CACHE[stream_id]
-            return
-
+                    yield f"data: {json.dumps({'content': content, 'chunk_index': 0, 'stream_id': stream_id})}\n\n"
         
-        if response_content.strip():
+        except Exception as e:
+            logger.error(f"Error in completion: {str(e)}")
+            yield f"data: {json.dumps({'error': str(e), 'stream_id': stream_id})}\n\n"
+            if stream_id in STREAMING_CACHE:
+                del STREAMING_CACHE[stream_id]
+            return
+        
+        # Save assistant message
+        if response_content:
             try:
-                # Build assistant message dynamically
                 assistant_message_kwargs = {
                     "thread_id": thread.id,
                     "role": "assistant",
@@ -1314,17 +1099,18 @@ async def chat(
                 if has_parent_column:
                     assistant_message_kwargs["parent_message_id"] = user_message.id
                 
-                assistant_message = Message(**assistant_message_kwargs)
-                db.add(assistant_message)
-                thread.updated_at = datetime.utcnow()
-                db.commit()
-                db.refresh(assistant_message)
-                logger.info(f"Saved response ({len(response_content)} chars) to thread {thread.id}")
+                with db.begin_nested():
+                    assistant_message = Message(**assistant_message_kwargs)
+                    db.add(assistant_message)
+                    thread.updated_at = datetime.utcnow()
+                    db.commit()
+                    db.refresh(assistant_message)
             except Exception as db_error:
                 logger.error(f"Database save failed: {db_error}")
+                yield f"data: {json.dumps({'error': f'Database error: {str(db_error)}', 'stream_id': stream_id})}\n\n"
         
-        yield f"data: {json.dumps({'done': True, 'thread_id': str(thread.id), 'total_chunks': len(content_chunks), 'stream_id': stream_id})}\n\n"
-        # Safe deletion
+        yield f"data: {json.dumps({'done': True, 'thread_id': str(thread.id), 'total_chunks': len(STREAMING_CACHE[stream_id]), 'stream_id': stream_id})}\n\n"
+        
         if stream_id in STREAMING_CACHE:
             del STREAMING_CACHE[stream_id]
     
@@ -1343,34 +1129,26 @@ async def chat(
     else:
         full_content = ""
         error_message = None
-        thread_id = None
+        thread_id = str(thread.id)
         total_chunks = 0
         stream_id = chat_request.stream_id or str(uuid.uuid4())
         
-        try:
-            async for chunk in generate_response():
-                if chunk.startswith("data: "):
-                    data = json.loads(chunk[6:])
-                    if 'content' in data:
-                        full_content += data['content']
-                    elif 'error' in data:
-                        error_message = data['error']
-                    elif 'thread_id' in data:
-                        thread_id = data['thread_id']
-                    elif 'total_chunks' in data:
-                        total_chunks = data['total_chunks']
-                    elif 'stream_id' in data:
-                        stream_id = data['stream_id']
-        except Exception as e:
-            logger.error(f"Error collecting non-streaming response: {e}")
-            raise HTTPException(status_code=500, detail=f"Request failed: {str(e)}")
+        async for chunk in generate_response():
+            if chunk.startswith("data: "):
+                data = json.loads(chunk[6:])
+                if 'content' in data:
+                    full_content += data['content']
+                elif 'error' in data:
+                    error_message = data['error']
+                elif 'total_chunks' in data:
+                    total_chunks = data['total_chunks']
         
         if error_message:
             raise HTTPException(status_code=500, detail=error_message)
         
         return {
             "content": full_content,
-            "thread_id": thread_id or str(thread.id),
+            "thread_id": thread_id,
             "done": True,
             "total_chunks": total_chunks,
             "stream_id": stream_id
