@@ -1,377 +1,410 @@
-
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { chatApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Send, Bot } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { MessageSquare, Send, Paperclip, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { ChatMessage } from "./ChatMessage";
-import { useToast } from "@/hooks/use-toast";
+import { useSidebar } from "../layout/Sidebar";
+import { toast } from "sonner";
+
+interface ChatInterfaceProps {
+  currentThreadId?: string;
+  setCurrentThreadId: (threadId?: string) => void;
+  onThreadCreated: (threadId: string) => void;
+}
 
 interface Message {
   id: string;
-  role: 'user' | 'assistant';
   content: string;
-  timestamp: Date;
-  isStreaming?: boolean;
-  model?: string;
-  provider?: string;
+  role: "user" | "assistant";
+  created_at: string;
 }
-
-interface ChatInterfaceProps {
-  selectedModel: string;
-  selectedProvider: string;
-  currentThreadId?: string;
-  onThreadCreated?: (threadId: string) => void;
-  onModelChange?: (model: string) => void;
-  onProviderChange?: (provider: string) => void;
-}
-
-const API_BASE_URL = "http://localhost:8001";
 
 export function ChatInterface({
-  selectedModel,
-  selectedProvider,
   currentThreadId,
+  setCurrentThreadId,
   onThreadCreated,
-  onModelChange,
-  onProviderChange
 }: ChatInterfaceProps) {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [inputValue, setInputValue] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [retryingMessageId, setRetryingMessageId] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [isComposing, setIsComposing] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const { toast } = useToast();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const getAuthToken = () => localStorage.getItem('authToken');
+  const [selectedApiKeyId, setSelectedApiKeyId] = useState<string | undefined>(undefined);
+  const [availableApiKeys, setAvailableApiKeys] = useState<any[]>([]);
 
-  // Load messages when thread changes
-  useEffect(() => {
-    if (currentThreadId) {
-      loadThreadMessages();
-    } else {
-      setMessages([]);
-    }
-  }, [currentThreadId]);
-
-  // Auto-scroll to bottom when messages change
-  useEffect(() => {
-    if (scrollAreaRef.current) {
-      const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
-      if (scrollContainer) {
-        scrollContainer.scrollTop = scrollContainer.scrollHeight;
-      }
-    }
-  }, [messages]);
-
-  const loadThreadMessages = async () => {
-    if (!currentThreadId) return;
-
-    const token = getAuthToken();
-    if (!token) return;
-
+  const { selectedProvider, selectedModel } = useSidebar();
+  // Helper: check if API key exists for provider
+  // Always use provider id for API key lookup
+  const hasProviderApiKey = (providerId: string): boolean => {
     try {
-      const response = await fetch(`${API_BASE_URL}/threads/${currentThreadId}/messages`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
-
-      if (response.ok) {
-        const messagesData = await response.json();
-        const formattedMessages = messagesData.map((msg: any) => ({
-          id: msg.id,
-          role: msg.role,
-          content: msg.content,
-          timestamp: new Date(msg.created_at),
-        }));
-        setMessages(formattedMessages);
-      }
-    } catch (error) {
-      console.error('Failed to load thread messages:', error);
+      const keysRaw = localStorage.getItem('apiKeys');
+      if (!keysRaw) return false;
+      const keys = JSON.parse(keysRaw);
+      return Array.isArray(keys) && keys.some((k: any) => k.provider === providerId && k.is_active);
+    } catch {
+      return false;
     }
   };
 
-  const sendMessage = async (messageContent: string, retryProvider?: string, retryModel?: string) => {
-    if (!messageContent.trim()) return;
+  // Update availableApiKeys and selectedApiKeyId when provider or model changes
+  useEffect(() => {
+    try {
+      const keysRaw = localStorage.getItem('apiKeys');
+      if (!keysRaw) return setAvailableApiKeys([]);
+      const keys = JSON.parse(keysRaw);
+      // Always use provider id for filtering
+      const filtered = Array.isArray(keys) ? keys.filter((k: any) => k.provider === selectedProvider && k.is_active) : [];
+      setAvailableApiKeys(filtered);
+      // Reset selectedApiKeyId if provider changes
+      if (filtered.length > 0) {
+        setSelectedApiKeyId(filtered[0].id);
+      } else {
+        setSelectedApiKeyId(undefined);
+      }
+    } catch {
+      setAvailableApiKeys([]);
+      setSelectedApiKeyId(undefined);
+    }
+  }, [selectedProvider, selectedModel]); // include selectedModel for robustness
 
-    const token = getAuthToken();
-    if (!token) {
-      toast({
-        title: "Authentication required",
-        description: "Please log in to send messages",
-        variant: "destructive"
-      });
+  useEffect(() => {
+    // removed debug log("ChatInterface props updated:", { selectedProvider, selectedModel });
+  }, [selectedProvider, selectedModel]);
+
+  const { data: messages, refetch: refetchMessages, isLoading: messagesLoading } = useQuery({
+    queryKey: ["messages", currentThreadId],
+    queryFn: () => (currentThreadId ? chatApi.getThreadMessages(currentThreadId) : Promise.resolve([])),
+    enabled: !!currentThreadId,
+  });
+
+  const sendMessageMutation = useMutation({
+    mutationFn: async ({ message, threadId }: { message: string; threadId?: string }) => {
+      if (!hasProviderApiKey(selectedProvider)) {
+        throw new Error(`No active API key found for provider: ${selectedProvider}. Please add one in the API Keys tab.`);
+      }
+      // removed debug log("Sending message:", { message, provider: selectedProvider, model_name: selectedModel, threadId });
+      try {
+        const response = await chatApi.sendMessage({
+          message,
+          model_name: selectedModel || "openrouter/mistralai/mistral-7b-instruct:free",
+          provider: selectedProvider || "openrouter",
+          thread_id: threadId,
+          stream: true,
+        });
+        if (response.headers.get('content-type')?.includes('text/event-stream')) {
+          const reader = response.body?.getReader();
+          let result = '';
+          if (reader) {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              const chunk = new TextDecoder().decode(value);
+              const lines = chunk.split('\n\n');
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  try {
+                    const data = JSON.parse(line.slice(6));
+                    if (data.content) {
+                      result += data.content;
+                    }
+                    if (data.error) {
+                      throw new Error(data.error);
+                    }
+                    if (data.done && data.thread_id) {
+                      return { thread_id: data.thread_id, content: result };
+                    }
+                  } catch (e) {
+                    console.error('Error parsing stream chunk:', e);
+                    throw new Error(`Failed to parse stream chunk: ${e.message}`);
+                  }
+                }
+              }
+            }
+          }
+          if (!result) {
+            throw new Error('No content received from stream');
+          }
+          return { thread_id: threadId, content: result };
+        } else {
+          const data = await response.json();
+          if (data.error) {
+            throw new Error(data.error);
+          }
+          return data;
+        }
+      } catch (error) {
+        console.error('Send message failed:', error);
+        throw error;
+      }
+    },
+    onSuccess: (data) => {
+      if (data.thread_id && !currentThreadId) {
+        setCurrentThreadId(data.thread_id);
+        onThreadCreated(data.thread_id);
+      }
+      refetchMessages();
+      setMessage("");
+      setFile(null);
+      setIsComposing(false);
+    },
+    onError: (error: any) => {
+      let errorMessage = 'Failed to send message';
+      if (error.status === 422) {
+        try {
+          errorMessage = error.message.includes('detail') 
+            ? JSON.parse(error.message.match(/\| Response: (.+)/)?.[1] || '{}').detail
+            : error.message;
+        } catch {
+          errorMessage = error.message;
+        }
+      } else if (error.message.includes('INCOMPLETE_CHUNKED_ENCODING')) {
+        errorMessage = 'Connection interrupted. Please try again.';
+      } else if (error.message.includes('No active API key found for provider')) {
+        errorMessage = error.message;
+      } else {
+        errorMessage = error.message || error.toString();
+      }
+      console.error("Error sending message:", errorMessage);
+      toast({ title: 'Error', description: errorMessage });
+    },
+  });
+
+  const handleSendMessage = () => {
+    if (!message.trim() && !file) return;
+    
+    if (message.length > 4000) {
+      toast({ title: 'Error', description: 'Message is too long. Please keep it under 4000 characters.'});
       return;
     }
 
-    const effectiveProvider = retryProvider || selectedProvider;
-    const effectiveModel = retryModel || selectedModel;
-
-    setIsLoading(true);
-    
-    // Add user message if not retrying
-    if (!retryProvider && !retryModel) {
-      const userMessage: Message = {
-        id: Date.now().toString(),
-        role: 'user',
-        content: messageContent,
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, userMessage]);
-      setInputValue("");
-    }
-
-    // Add streaming assistant message
-    const assistantMessageId = Date.now().toString() + "_assistant";
-    const assistantMessage: Message = {
-      id: assistantMessageId,
-      role: 'assistant',
-      content: '',
-      timestamp: new Date(),
-      isStreaming: true,
-      model: effectiveModel,
-      provider: effectiveProvider,
-    };
-    
-    setMessages(prev => [...prev, assistantMessage]);
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/chat`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          message: messageContent,
-          thread_id: currentThreadId,
-          provider: effectiveProvider,
-          model_name: effectiveModel,
-          stream: true,
-        }),
+    if (file) {
+      if (file.size > 10 * 1024 * 1024) {
+        toast({ title: 'Error', description: 'File is too large. Please upload a file smaller than 10MB.'});
+        return;
+      }
+      fileUploadMutation.mutate(file);
+    } else {
+      sendMessageMutation.mutate({
+        message: message.trim(),
+        threadId: currentThreadId,
       });
+    }
+  };
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+  // File upload is not implemented in chatApi. Show error if attempted.
+const fileUploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      throw new Error('File upload is not supported in this build.');
+    },
+    onSuccess: (data) => {
+      const fileContent = `[File: ${file?.name}] ${message}`;
+      sendMessageMutation.mutate({
+        message: fileContent,
+        threadId: currentThreadId,
+      });
+    },
+    onError: (error) => {
+      console.error("Error uploading file:", error);
+      toast({ title: 'Error', description: `Failed to upload file. Please try again or check your connection.`});
+    },
+  });
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Failed to get response reader');
-      }
-
-      let fullContent = '';
-      let threadId = currentThreadId;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = new TextDecoder().decode(value);
-        const lines = chunk.split('\n');
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              
-              if (data.content) {
-                fullContent += data.content;
-                setMessages(prev => 
-                  prev.map(msg => 
-                    msg.id === assistantMessageId 
-                      ? { ...msg, content: fullContent }
-                      : msg
-                  )
-                );
-              }
-              
-              if (data.done && data.thread_id && !threadId) {
-                threadId = data.thread_id;
-                onThreadCreated?.(threadId);
-              }
-              
-              if (data.error) {
-                throw new Error(data.error);
-              }
-            } catch (parseError) {
-              console.error('Error parsing SSE data:', parseError);
-            }
-          }
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0];
+    if (selectedFile) {
+      setFile(selectedFile);
+      setIsComposing(true);
+      if (fileInputRef.current) {
+          fileInputRef.current.value = "";
         }
       }
+    };
 
-      // Mark message as complete
-      setMessages(prev => 
-        prev.map(msg => 
-          msg.id === assistantMessageId 
-            ? { ...msg, isStreaming: false }
-            : msg
-        )
-      );
-
-      // Update model and provider if they were changed during retry
-      if (retryProvider && retryModel) {
-        onProviderChange?.(retryProvider);
-        onModelChange?.(retryModel);
+    const handleRemoveFile = () => {
+      setFile(null);
+      if (!message.trim()) {
+        setIsComposing(false);
       }
+    };
 
-    } catch (error) {
-      console.error('Error sending message:', error);
-      
-      // Remove the failed assistant message
-      setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
-      
-      toast({
-        title: "Error",
-        description: error instanceof Error ? error.message : "Failed to send message",
-        variant: "destructive"
-      });
-    } finally {
-      setIsLoading(false);
-      setRetryingMessageId(null);
-    }
-  };
 
-  const handleSend = () => {
-    if (inputValue.trim() && !isLoading) {
-      sendMessage(inputValue.trim());
-    }
-  };
-
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      handleSendMessage();
     }
   };
 
-  const handleCopy = (content: string) => {
-    navigator.clipboard.writeText(content);
-    toast({
-      title: "Copied to clipboard",
-      description: "Message content has been copied",
-    });
+  const autoResizeTextarea = () => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 120)}px`;
+    }
   };
 
-  const handleFeedback = (messageId: string, type: 'up' | 'down') => {
-    toast({
-      title: "Feedback recorded",
-      description: `Thanks for your ${type === 'up' ? 'positive' : 'negative'} feedback!`,
-    });
-  };
+  useEffect(() => {
+    autoResizeTextarea();
+  }, [message]);
 
-  const handleRetry = (messageId: string) => {
-    const messageIndex = messages.findIndex(msg => msg.id === messageId);
-    if (messageIndex === -1) return;
+  useEffect(() => {
+    if (scrollAreaRef.current) {
+      scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight;
+    }
+  }, []);
 
-    const userMessageIndex = messageIndex - 1;
-    if (userMessageIndex < 0 || messages[userMessageIndex].role !== 'user') return;
+  const isLoading = sendMessageMutation.isPending || fileUploadMutation.isPending;
 
-    const userMessage = messages[userMessageIndex];
-    
-    // Remove the assistant message we're retrying
-    setMessages(prev => prev.filter(msg => msg.id !== messageId));
-    setRetryingMessageId(messageId);
-    
-    // Resend with same model
-    sendMessage(userMessage.content);
-  };
 
-  const handleRetryWithDifferentModel = (messageId: string, provider: string, model: string) => {
-    const messageIndex = messages.findIndex(msg => msg.id === messageId);
-    if (messageIndex === -1) return;
-
-    const userMessageIndex = messageIndex - 1;
-    if (userMessageIndex < 0 || messages[userMessageIndex].role !== 'user') return;
-
-    const userMessage = messages[userMessageIndex];
-    
-    // Remove the assistant message we're retrying
-    setMessages(prev => prev.filter(msg => msg.id !== messageId));
-    setRetryingMessageId(messageId);
-    
-    // Resend with different model
-    sendMessage(userMessage.content, provider, model);
-  };
-
-  if (messages.length === 0 && !currentThreadId) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
-        <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center mb-6">
-          <Bot className="w-8 h-8 text-white" />
-        </div>
-        <h2 className="text-2xl font-bold text-white mb-2">Welcome to BYOK Chat</h2>
-        <p className="text-slate-400 mb-8 max-w-md">
-          Start a conversation with AI using your own API keys. Your conversations are private and secure.
-        </p>
-        <div className="w-full max-w-2xl">
-          <div className="flex gap-2">
-            <Input
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder="Type your message here..."
-              className="flex-1 bg-slate-800/50 border-slate-600 text-white placeholder-slate-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              disabled={isLoading}
-            />
-            <Button 
-              onClick={handleSend}
-              disabled={!inputValue.trim() || isLoading}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4"
-            >
-              <Send className="w-4 h-4" />
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  useEffect(() => {
+    try {
+      const keysRaw = localStorage.getItem('apiKeys');
+      if (!keysRaw) return setAvailableApiKeys([]);
+      const keys = JSON.parse(keysRaw);
+      const filtered = Array.isArray(keys) ? keys.filter((k: any) => k.provider === selectedProvider && k.is_active) : [];
+      setAvailableApiKeys(filtered);
+      if (filtered.length > 0 && !selectedApiKeyId) {
+        setSelectedApiKeyId(filtered[0].id);
+      }
+    } catch {
+      setAvailableApiKeys([]);
+    }
+  }, [selectedProvider]);
 
   return (
-    <div className="flex-1 flex flex-col h-full">
-      {/* Messages Area */}
-      <div className="flex-1 min-h-0">
-        <ScrollArea ref={scrollAreaRef} className="h-full">
-          <div className="space-y-6 p-6">
-            {messages.map((message) => (
+    <div className="flex-1 flex flex-col h-full bg-background text-foreground">
+      <ScrollArea className="flex-1 px-6 py-8" ref={scrollAreaRef}>
+        <div className="max-w-3xl mx-auto space-y-4">
+          {messagesLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+            </div>
+          ) : messages?.length === 0 ? (
+            <div className="text-center py-16">
+              <MessageSquare className="w-16 h-16 text-gray-500 mx-auto mb-4" />
+              <h2 className="text-xl font-semibold text-gray-300">Start a Conversation</h2>
+              <p className="text-muted-foreground mt-2">
+                Type a message below to chat with <span className="text-blue-400">{selectedModel}</span> via{" "}
+                <span className="text-blue-400">{selectedProvider}</span>
+              </p>
+            </div>
+          ) : (
+            messages?.map((msg: Message) => (
               <ChatMessage
-                key={message.id}
-                message={message}
-                onCopy={() => handleCopy(message.content)}
-                onFeedback={(type) => handleFeedback(message.id, type)}
-                onRetry={message.role === 'assistant' ? () => handleRetry(message.id) : undefined}
-                onRetryWithDifferentModel={message.role === 'assistant' ? (provider, model) => handleRetryWithDifferentModel(message.id, provider, model) : undefined}
-                isLoading={isLoading && retryingMessageId === message.id}
-                currentProvider={selectedProvider}
-                currentModel={selectedModel}
+                key={msg.id}
+                role={msg.role}
+                content={msg.content}
+                timestamp={msg.created_at}
+                type="text"
               />
-            ))}
-          </div>
-        </ScrollArea>
-      </div>
+            ))
+          )}
+          {isLoading && (
+            <div className="flex justify-start">
+              <div className="bg-card rounded-2xl px-4 py-3 max-w-[80%] shadow-sm">
+                <div className="flex space-x-2">
+                  <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"></div>
+                  <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: "0.1s" }}></div>
+                  <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: "0.2s" }}></div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </ScrollArea>
+      {/* Chat Prompt Area */}
+      <div className="border-t border-border bg-card/95 backdrop-blur-sm shadow-lg dark:bg-gray-900/95">
+        <div className="max-w-3xl mx-auto p-6">
+          {/* API Key Dropdown if multiple keys for provider */}
+          {availableApiKeys.length > 1 && (
+            <div className="mb-4">
+              <label className="block text-xs font-semibold text-muted-foreground mb-1">Select API Key for this chat</label>
+              <select
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground focus:ring-2 focus:ring-blue-500"
+                value={selectedApiKeyId}
+                onChange={e => setSelectedApiKeyId(e.target.value)}
+              >
+                {availableApiKeys.map((key) => (
+                  <option key={key.id} value={key.id}>{key.key_name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {file && (
+            <div className="mb-4 p-3 bg-card rounded-xl border border-gray-700 dark:border-gray-600 flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <Paperclip className="w-5 h-5 text-muted-foreground" />
+                <span className="text-sm font-medium text-gray-200 dark:text-gray-400">{file.name}</span>
+                <span className="text-xs text-gray-500 dark:text-gray-400">({(file.size / 1024 / 1024).toFixed(1)} MB)</span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleRemoveFile}
+                className="h-8 w-8 p-0 hover:bg-gray-700 hover:text-red-400 transition-colors duration-200"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+          )}
+          {/* ...rest of prompt area... */}
+          <div className="flex items-center justify-between">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => fileInputRef.current?.click()}
+              className="h-8 w-8 p-0 hover:bg-gray-700 transition-colors duration-200"
+            >
+              <Paperclip className="w-5 h-5" />
+            </Button>
 
-      {/* Input Area */}
-      <div className="border-t border-slate-700/50 p-4">
-        <div className="flex gap-2 max-w-4xl mx-auto">
-          <Input
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyPress={handleKeyPress}
-            placeholder="Type your message here..."
-            className="flex-1 bg-slate-800/50 border-slate-600 text-white placeholder-slate-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            disabled={isLoading}
-          />
-          <Button 
-            onClick={handleSend}
-            disabled={!inputValue.trim() || isLoading}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-4"
-          >
-            <Send className="w-4 h-4" />
-          </Button>
+            <div className="flex-1 relative">
+              <Textarea
+                ref={textareaRef}
+                value={message}
+                onChange={(e) => {
+                  setMessage(e.target.value);
+                  setIsComposing(e.target.value.trim().length > 0 || !!file);
+                }}
+                onKeyDown={handleKeyDown}
+                placeholder="Type your message... (Shift+Enter for new line)"
+                className="min-h-[48px] max-h-[120px] resize-none bg-card border-gray-700 text-foreground placeholder-gray-400 focus:border-blue-500 focus:ring-blue-500/30 rounded-xl pr-12 py-3 text-sm font-medium transition-all duration-200"
+                disabled={isLoading}
+              />
+            </div>
+
+            <Button
+              onClick={handleSendMessage}
+              disabled={(!message.trim() && !file) || isLoading}
+              className="flex-shrink-0 h-12 w-12 p-0 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl transition-colors duration-200"
+            >
+              <Send className="w-5 h-5" />
+            </Button>
+          </div>
+
+          <div className="mt-3 flex items-center justify-center">
+            <p className="text-xs text-muted-foreground">
+              Using <span className="text-blue-400">{selectedModel}</span> via{" "}
+              <span className="text-blue-400">{selectedProvider}</span>
+            </p>
+          </div>
         </div>
       </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        onChange={handleFileSelect}
+        className="hidden"
+        accept="*/*"
+      />
     </div>
   );
-}
+};
+
+export default ChatInterface;

@@ -2,10 +2,8 @@ from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey, Boolean
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session, relationship
-from sqlalchemy.types import TypeDecorator, CHAR
+from sqlalchemy.orm import Session
+from sqlalchemy import or_
 import sqlalchemy as sa
 from passlib.context import CryptContext
 import jwt
@@ -21,16 +19,20 @@ import uuid
 import os
 import logging
 from contextlib import asynccontextmanager
+from collections import defaultdict
+
+# Import our separated database components
+from database import engine, SessionLocal, create_tables, get_db, test_connection
+from models import User, APIKey, Thread, Message, SharedLink
 
 # Configuration
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 30 * 24 * 7  # 7 days
 
 # Handle encryption key properly
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 if not ENCRYPTION_KEY:
-    # Generate a new key and print it for the user to save
     ENCRYPTION_KEY = Fernet.generate_key()
     print("=" * 60)
     print("⚠️  WARNING: No ENCRYPTION_KEY environment variable found!")
@@ -38,27 +40,8 @@ if not ENCRYPTION_KEY:
     print(f"   ENCRYPTION_KEY={ENCRYPTION_KEY.decode()}")
     print("=" * 60)
 else:
-    # Convert string back to bytes if needed
     if isinstance(ENCRYPTION_KEY, str):
         ENCRYPTION_KEY = ENCRYPTION_KEY.encode()
-
-# Database configuration - defaults to SQLite, can be overridden with env var
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./byok_chat.db")
-
-# Database setup with SQLite-specific configuration
-if DATABASE_URL.startswith("sqlite"):
-    # SQLite specific settings
-    engine = create_engine(
-        DATABASE_URL, 
-        connect_args={"check_same_thread": False},  # Needed for SQLite
-        echo=False  # Set to True for SQL debugging
-    )
-else:
-    # PostgreSQL or other databases
-    engine = create_engine(DATABASE_URL, echo=False)
-
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
 
 # Encryption setup
 fernet = Fernet(ENCRYPTION_KEY)
@@ -73,90 +56,8 @@ security = HTTPBearer()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Custom UUID type that works with both SQLite and PostgreSQL
-class GUID(TypeDecorator):
-    """Platform-independent GUID type.
-    Uses PostgreSQL's UUID type, otherwise uses CHAR(36) storing as stringified hex values.
-    """
-    impl = CHAR
-    cache_ok = True
-
-    def load_dialect_impl(self, dialect):
-        if dialect.name == 'postgresql':
-            return dialect.type_descriptor(sa.dialects.postgresql.UUID())
-        else:
-            return dialect.type_descriptor(CHAR(36))
-
-    def process_bind_param(self, value, dialect):
-        if value is None:
-            return value
-        elif dialect.name == 'postgresql':
-            return str(value)
-        else:
-            if not isinstance(value, uuid.UUID):
-                return str(uuid.UUID(value))
-            else:
-                return str(value)
-
-    def process_result_value(self, value, dialect):
-        if value is None:
-            return value
-        else:
-            if not isinstance(value, uuid.UUID):
-                return uuid.UUID(value)
-            return value
-
-# Database Models
-class User(Base):
-    __tablename__ = "users"
-    
-    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
-    email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
-    threads = relationship("Thread", back_populates="user", cascade="all, delete-orphan")
-
-class APIKey(Base):
-    __tablename__ = "api_keys"
-    
-    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
-    user_id = Column(GUID(), ForeignKey("users.id"), nullable=False)
-    provider = Column(String, nullable=False)  # openai, anthropic, google, etc.
-    model_name = Column(String, nullable=False)  # gpt-4, claude-3, etc.
-    encrypted_key = Column(Text, nullable=False)
-    key_name = Column(String, nullable=False)  # user-defined name
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    user = relationship("User", back_populates="api_keys")
-
-class Thread(Base):
-    __tablename__ = "threads"
-    
-    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
-    user_id = Column(GUID(), ForeignKey("users.id"), nullable=False)
-    title = Column(String, nullable=False)
-    provider = Column(String, nullable=False)
-    model_name = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    user = relationship("User", back_populates="threads")
-    messages = relationship("Message", back_populates="thread", cascade="all, delete-orphan")
-
-class Message(Base):
-    __tablename__ = "messages"
-    
-    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
-    thread_id = Column(GUID(), ForeignKey("threads.id"), nullable=False)
-    role = Column(String, nullable=False)  # user, assistant, system
-    content = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    thread = relationship("Thread", back_populates="messages")
+# In-memory cache for streaming state
+STREAMING_CACHE = defaultdict(list)  # {stream_id: [chunks]}
 
 # Pydantic Models
 class UserCreate(BaseModel):
@@ -227,18 +128,24 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     created_at: datetime
+    parent_message_id: Optional[str] = None
+    branch_id: Optional[str] = None
     
     class Config:
         from_attributes = True
 
-class ChatRequest(BaseModel):
-    message: str
-    thread_id: Optional[str] = None
-    provider: str
-    model_name: str
-    stream: bool = True
+class ShareLinkCreate(BaseModel):
+    expires_in_hours: Optional[int] = None
 
-# Provider and Model Response Models
+class ShareLinkResponse(BaseModel):
+    link_id: str
+    thread_id: str
+    expires_at: Optional[datetime] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
 class ProviderResponse(BaseModel):
     id: str
     name: str
@@ -250,6 +157,16 @@ class ModelsByProviderResponse(BaseModel):
 class ProvidersAndModelsResponse(BaseModel):
     providers: List[ProviderResponse]
     models_by_provider: Dict[str, List[str]]
+
+class ChatRequest(BaseModel):
+    message: str
+    thread_id: Optional[str] = None
+    provider: str
+    model_name: str
+    stream: bool = True
+    branch_id: Optional[str] = None
+    resume_from_chunk: Optional[int] = None
+    stream_id: Optional[str] = None
 
 # Utility Functions
 def get_password_hash(password: str) -> str:
@@ -274,75 +191,24 @@ def encrypt_api_key(api_key: str) -> str:
 def decrypt_api_key(encrypted_key: str) -> str:
     return fernet.decrypt(encrypted_key.encode()).decode()
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 def list_providers():
-    """Get all available providers from LiteLLM"""
     try:
+        import litellm
         from litellm import models_by_provider
-        # Create a mapping of provider IDs to display names
-        provider_names = {
-            'openai': 'OpenAI',
-            'anthropic': 'Anthropic',
-            'google': 'Google',
-            'cohere': 'Cohere',
-            'huggingface': 'Hugging Face',
-            'azure': 'Azure OpenAI',
-            'bedrock': 'AWS Bedrock',
-            'vertex_ai': 'Google Vertex AI',
-            'palm': 'Google PaLM',
-            'mistral': 'Mistral AI',
-            'together_ai': 'Together AI',
-            'openrouter': 'OpenRouter',
-            'replicate': 'Replicate',
-            'anyscale': 'Anyscale',
-            'perplexity': 'Perplexity',
-            'groq': 'Groq',
-            'deepinfra': 'DeepInfra',
-            'ai21': 'AI21 Labs',
-            'nlp_cloud': 'NLP Cloud',
-            'aleph_alpha': 'Aleph Alpha',
-        }
-        
-        providers = []
-        for provider_id in models_by_provider.keys():
-            display_name = provider_names.get(provider_id, provider_id.title())
-            providers.append({
-                'id': provider_id,
-                'name': display_name
-            })
-        
-        return sorted(providers, key=lambda x: x['name'])
+        all_providers = [p for p in models_by_provider.keys() if p != 'lepton']
+        logger.info(f"Found {len(all_providers)} providers: {all_providers}")
+        return [{"id": provider, "name": provider.replace('_', ' ').title()} for provider in all_providers]
     except Exception as e:
-        logger.error(f"Error getting providers: {e}")
-        # Fallback to basic providers if LiteLLM fails
-        return [
-            {'id': 'openai', 'name': 'OpenAI'},
-            {'id': 'anthropic', 'name': 'Anthropic'},
-            {'id': 'google', 'name': 'Google'},
-            {'id': 'cohere', 'name': 'Cohere'},
-        ]
+        logger.error(f"Error getting providers from LiteLLM: {e}", exc_info=True)
+        return []
 
 def get_models_by_provider(provider: str):
-    """Get models for a specific provider from LiteLLM"""
-    try:
-        from litellm import models_by_provider
-        return models_by_provider.get(provider, [])
-    except Exception as e:
-        logger.error(f"Error getting models for provider {provider}: {e}")
-        # Fallback models if LiteLLM fails
-        fallback_models = {
-            'openai': ['gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo'],
-            'anthropic': ['claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku'],
-            'google': ['gemini-pro', 'gemini-pro-vision'],
-            'cohere': ['command', 'command-light'],
-        }
-        return fallback_models.get(provider, [])
+    from litellm import models_by_provider
+    models = models_by_provider.get(provider, [])
+    logger.info(f"Found {len(models)} models for provider {provider}")
+    if isinstance(models, dict):
+        models = list(models.keys()) if models else []
+    return models
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
@@ -354,14 +220,25 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
         if user_id is None:
+            logger.error("JWT payload missing 'sub' field")
             raise credentials_exception
-    except InvalidTokenError:
+    except InvalidTokenError as e:
+        logger.error(f"Invalid JWT token: {e}")
         raise credentials_exception
-    
-    user = db.query(User).filter(User.id == user_id).first()
-    if user is None:
-        raise credentials_exception
-    return user
+
+    try:
+        if db is None:
+            logger.error("Database session is None")
+            raise HTTPException(status_code=500, detail="Database session unavailable")
+        
+        user = db.query(User).filter(User.id == user_id).first()
+        if user is None:
+            logger.error(f"User not found for ID: {user_id}")
+            raise credentials_exception
+        return user
+    except Exception as e:
+        logger.error(f"DB error in get_current_user: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error during authentication: {str(e)}")
 
 # AI Provider Integrations
 class AIProviderClient:
@@ -423,7 +300,6 @@ class AIProviderClient:
             "anthropic-version": "2023-06-01"
         }
         
-        # Convert messages format for Anthropic
         system_message = ""
         formatted_messages = []
         
@@ -479,49 +355,62 @@ class AIProviderClient:
 # App Initialization
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Test database connection
+    if not test_connection():
+        logger.error("Failed to connect to Turso database")
+        raise RuntimeError("Database connection failed")
+    
     # Create tables
-    Base.metadata.create_all(bind=engine)
+    create_tables()
+    logger.info("Application startup complete")
     yield
+    logger.info("Application shutdown")
 
 app = FastAPI(
-    title="BYOK AI Chat API",
-    description="Bring Your Own Keys AI Chat Application Backend",
+    title="BYOK Chat API",
+    description="Bring Your Own Keys AI Chat Application Backend with Turso libSQL",
     version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
     lifespan=lifespan
 )
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "http://localhost:8001",
+        "http://127.0.0.1:8001"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600
 )
 
-# New endpoints for providers and models
+# Provider Endpoints
 @app.get("/providers", response_model=List[ProviderResponse])
 async def get_providers():
-    """Get all available AI providers"""
     providers = list_providers()
     return [ProviderResponse(id=p['id'], name=p['name']) for p in providers]
 
 @app.get("/providers/{provider}/models")
 async def get_provider_models(provider: str):
-    """Get models for a specific provider"""
     models = get_models_by_provider(provider)
     return {"provider": provider, "models": models}
 
 @app.get("/providers-and-models", response_model=ProvidersAndModelsResponse)
 async def get_providers_and_models():
-    """Get all providers and their models in one request"""
     providers = list_providers()
     models_by_provider = {}
-    
     for provider in providers:
         provider_id = provider['id']
         models_by_provider[provider_id] = get_models_by_provider(provider_id)
-    
     return ProvidersAndModelsResponse(
         providers=[ProviderResponse(id=p['id'], name=p['name']) for p in providers],
         models_by_provider=models_by_provider
@@ -530,27 +419,29 @@ async def get_providers_and_models():
 # Auth Endpoints
 @app.post("/auth/register", response_model=UserResponse)
 async def register(user: UserCreate, db: Session = Depends(get_db)):
-    # Check if user exists
-    db_user = db.query(User).filter(User.email == user.email).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Create user
-    hashed_password = get_password_hash(user.password)
-    db_user = User(
-        email=user.email,
-        hashed_password=hashed_password
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    
-    return UserResponse(
-        id=str(db_user.id),
-        email=db_user.email,
-        is_active=db_user.is_active,
-        created_at=db_user.created_at
-    )
+    try:
+        db_user = db.query(User).filter(User.email == user.email).first()
+        if db_user:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        hashed_password = get_password_hash(user.password)
+        db_user = User(
+            email=user.email,
+            hashed_password=hashed_password
+        )
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        
+        return UserResponse(
+            id=str(db_user.id),
+            email=db_user.email,
+            is_active=db_user.is_active,
+            created_at=db_user.created_at
+        )
+    except Exception as e:
+        logger.error(f"Registration failed: {e}")
+        raise HTTPException(status_code=500, detail="Registration failed. Check server logs for details.")
 
 @app.post("/auth/login", response_model=Token)
 async def login(user: UserLogin, db: Session = Depends(get_db)):
@@ -585,7 +476,6 @@ async def create_api_key(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Validate provider
     providers = list_providers()
     valid_providers = [p['id'] for p in providers]
     if api_key_data.provider not in valid_providers:
@@ -594,7 +484,6 @@ async def create_api_key(
             detail=f"Invalid provider. Must be one of: {', '.join(valid_providers)}"
         )
     
-    # Validate model for provider
     valid_models = get_models_by_provider(api_key_data.provider)
     if api_key_data.model_name not in valid_models:
         raise HTTPException(
@@ -602,8 +491,27 @@ async def create_api_key(
             detail=f"Invalid model for provider {api_key_data.provider}. Must be one of: {', '.join(valid_models)}"
         )
     
-    # Encrypt the API key
     encrypted_key = encrypt_api_key(api_key_data.api_key)
+    existing_keys = db.query(APIKey).filter(
+        APIKey.user_id == current_user.id,
+        APIKey.provider == api_key_data.provider,
+        APIKey.encrypted_key == encrypted_key,
+        APIKey.is_active == True
+    ).all()
+    
+    exact_match = db.query(APIKey).filter(
+        APIKey.user_id == current_user.id,
+        APIKey.provider == api_key_data.provider,
+        APIKey.model_name == api_key_data.model_name,
+        APIKey.encrypted_key == encrypted_key,
+        APIKey.is_active == True
+    ).first()
+    
+    if exact_match:
+        raise HTTPException(
+            status_code=400,
+            detail=f"API key for {api_key_data.provider} {api_key_data.model_name} already exists"
+        )
     
     db_api_key = APIKey(
         user_id=current_user.id,
@@ -617,7 +525,7 @@ async def create_api_key(
     db.commit()
     db.refresh(db_api_key)
     
-    return APIKeyResponse(
+    response_data = APIKeyResponse(
         id=str(db_api_key.id),
         provider=db_api_key.provider,
         model_name=db_api_key.model_name,
@@ -625,6 +533,19 @@ async def create_api_key(
         is_active=db_api_key.is_active,
         created_at=db_api_key.created_at
     )
+    
+    warning_message = None
+    if existing_keys:
+        existing_models = [key.model_name for key in existing_keys]
+        warning_message = f"Note: This API key is already used for {api_key_data.provider} with model(s): {', '.join(existing_models)}"
+    
+    if warning_message:
+        return {
+            **response_data.dict(),
+            "warning": warning_message
+        }
+    
+    return response_data
 
 @app.get("/api-keys", response_model=List[APIKeyResponse])
 async def get_api_keys(
@@ -711,10 +632,10 @@ async def get_threads(
 @app.get("/threads/{thread_id}/messages", response_model=List[MessageResponse])
 async def get_thread_messages(
     thread_id: str,
+    branch_id: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Verify thread belongs to user
     thread = db.query(Thread).filter(
         Thread.id == thread_id,
         Thread.user_id == current_user.id
@@ -723,16 +644,60 @@ async def get_thread_messages(
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
     
-    messages = db.query(Message).filter(Message.thread_id == thread_id).order_by(Message.created_at).all()
-    return [
-        MessageResponse(
-            id=str(msg.id),
-            role=msg.role,
-            content=msg.content,
-            created_at=msg.created_at
-        )
-        for msg in messages
+    # Define core columns that must exist
+    columns = [
+        Message.id,
+        Message.thread_id,
+        Message.role,
+        Message.content,
+        Message.created_at
     ]
+    
+    # Check if parent_message_id exists
+    has_parent_column = True
+    try:
+        db.execute(sa.text("SELECT parent_message_id FROM messages LIMIT 1"))
+        columns.append(Message.parent_message_id)
+    except sa.exc.OperationalError:
+        logger.warning("parent_message_id column not found in messages table")
+        has_parent_column = False
+    
+    # Check if branch_id exists
+    has_branch_column = True
+    try:
+        db.execute(sa.text("SELECT branch_id FROM messages LIMIT 1"))
+        columns.append(Message.branch_id)
+    except sa.exc.OperationalError:
+        logger.warning("branch_id column not found in messages table")
+        has_branch_column = False
+    
+    query = db.query(*columns).filter(Message.thread_id == thread_id)
+    if has_branch_column and branch_id:
+        query = query.filter(Message.branch_id == branch_id)
+    elif has_branch_column:
+        query = query.filter(Message.branch_id == None)
+    
+    messages = query.order_by(Message.created_at).all()
+    
+    def build_message_response(msg_tuple):
+        idx = 0
+        msg_dict = {
+            "id": str(msg_tuple[idx]),
+            "role": msg_tuple[idx + 2],
+            "content": msg_tuple[idx + 3],
+            "created_at": msg_tuple[idx + 4],
+            "parent_message_id": None,
+            "branch_id": None
+        }
+        idx += 5
+        if has_parent_column:
+            msg_dict["parent_message_id"] = str(msg_tuple[idx]) if msg_tuple[idx] else None
+            idx += 1
+        if has_branch_column:
+            msg_dict["branch_id"] = str(msg_tuple[idx]) if msg_tuple[idx] else None
+        return MessageResponse(**msg_dict)
+    
+    return [build_message_response(msg) for msg in messages]
 
 @app.delete("/threads/{thread_id}")
 async def delete_thread(
@@ -753,31 +718,247 @@ async def delete_thread(
     
     return {"message": "Thread deleted successfully"}
 
-# Chat Endpoint
+@app.post("/threads/{thread_id}/branch/{message_id}", response_model=ThreadResponse)
+async def create_branch(
+    thread_id: str,
+    message_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    thread = db.query(Thread).filter(
+        Thread.id == thread_id,
+        Thread.user_id == current_user.id
+    ).first()
+    
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    
+    message = db.query(Message).filter(
+        Message.id == message_id,
+        Message.thread_id == thread_id
+    ).first()
+    
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    
+    branch_id = str(uuid.uuid4())
+    
+    # Check if columns exist
+    has_parent_column = True
+    try:
+        db.execute(sa.text("SELECT parent_message_id FROM messages LIMIT 1"))
+    except sa.exc.OperationalError:
+        has_parent_column = False
+    
+    has_branch_column = True
+    try:
+        db.execute(sa.text("SELECT branch_id FROM messages LIMIT 1"))
+    except sa.exc.OperationalError:
+        has_branch_column = False
+    
+    # Copy messages up to the branch point
+    query = db.query(Message).filter(
+        Message.thread_id == thread_id,
+        Message.created_at <= message.created_at
+    )
+    if has_branch_column:
+        query = query.filter(Message.branch_id == None)
+    
+    messages = query.order_by(Message.created_at).all()
+    
+    for msg in messages:
+        new_msg = Message(
+            thread_id=thread_id,
+            role=msg.role,
+            content=msg.content,
+            created_at=msg.created_at
+        )
+        if has_parent_column:
+            new_msg.parent_message_id = msg.parent_message_id
+        if has_branch_column:
+            new_msg.branch_id = branch_id
+        db.add(new_msg)
+    
+    db.commit()
+    
+    return ThreadResponse(
+        id=str(thread.id),
+        title=thread.title,
+        provider=thread.provider,
+        model_name=thread.model_name,
+        created_at=thread.created_at,
+        updated_at=thread.updated_at
+    )
+
+@app.post("/threads/{thread_id}/share", response_model=ShareLinkResponse)
+async def create_share_link(
+    thread_id: str,
+    share_data: ShareLinkCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    thread = db.query(Thread).filter(
+        Thread.id == thread_id,
+        Thread.user_id == current_user.id
+    ).first()
+    
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    
+    link_id = str(uuid.uuid4())
+    expires_at = None
+    if share_data.expires_in_hours:
+        expires_at = datetime.utcnow() + timedelta(hours=share_data.expires_in_hours)
+    
+    shared_link = SharedLink(
+        thread_id=thread.id,
+        user_id=current_user.id,
+        link_id=link_id,
+        expires_at=expires_at
+    )
+    
+    db.add(shared_link)
+    db.commit()
+    db.refresh(shared_link)
+    
+    return ShareLinkResponse(
+        link_id=shared_link.link_id,
+        thread_id=str(shared_link.thread_id),
+        expires_at=shared_link.expires_at,
+        created_at=shared_link.created_at
+    )
+
+@app.get("/shared/{link_id}", response_model=List[MessageResponse])
+async def get_shared_thread(
+    link_id: str,
+    branch_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    shared_link = db.query(SharedLink).filter(SharedLink.link_id == link_id).first()
+    
+    if not shared_link:
+        raise HTTPException(status_code=404, detail="Shared link not found")
+    
+    if shared_link.expires_at and shared_link.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=410, detail="Shared link has expired")
+    
+    # Define core columns
+    columns = [
+        Message.id,
+        Message.thread_id,
+        Message.role,
+        Message.content,
+        Message.created_at
+    ]
+    
+    # Check if parent_message_id exists
+    has_parent_column = True
+    try:
+        db.execute(sa.text("SELECT parent_message_id FROM messages LIMIT 1"))
+        columns.append(Message.parent_message_id)
+    except sa.exc.OperationalError:
+        has_parent_column = False
+    
+    # Check if branch_id exists
+    has_branch_column = True
+    try:
+        db.execute(sa.text("SELECT branch_id FROM messages LIMIT 1"))
+        columns.append(Message.branch_id)
+    except sa.exc.OperationalError:
+        has_branch_column = False
+    
+    query = db.query(*columns).filter(Message.thread_id == shared_link.thread_id)
+    if has_branch_column and branch_id:
+        query = query.filter(Message.branch_id == branch_id)
+    elif has_branch_column:
+        query = query.filter(Message.branch_id == None)
+    
+    messages = query.order_by(Message.created_at).all()
+    
+    def build_message_response(msg_tuple):
+        idx = 0
+        msg_dict = {
+            "id": str(msg_tuple[idx]),
+            "role": msg_tuple[idx + 2],
+            "content": msg_tuple[idx + 3],
+            "created_at": msg_tuple[idx + 4],
+            "parent_message_id": None,
+            "branch_id": None
+        }
+        idx += 5
+        if has_parent_column:
+            msg_dict["parent_message_id"] = str(msg_tuple[idx]) if msg_tuple[idx] else None
+            idx += 1
+        if has_branch_column:
+            msg_dict["branch_id"] = str(msg_tuple[idx]) if msg_tuple[idx] else None
+        return MessageResponse(**msg_dict)
+    
+    return [build_message_response(msg) for msg in messages]
+
+
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+import json
+import uuid
+import asyncio
+from datetime import datetime
+from typing import Optional
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+import sqlalchemy as sa
+import logging
+
+STREAMING_CACHE = {}  # Global cache for streaming responses
+
+class ChatRequest(BaseModel):
+    message: str
+    thread_id: Optional[str] = None
+    provider: str
+    model_name: str
+    stream: bool = True
+    branch_id: Optional[str] = None
+    resume_from_chunk: Optional[int] = None
+    stream_id: Optional[str] = None
+
 @app.post("/chat")
 async def chat(
     chat_request: ChatRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Get the appropriate API key
+    # 1. Try exact provider+model match
     api_key_record = db.query(APIKey).filter(
         APIKey.user_id == current_user.id,
         APIKey.provider == chat_request.provider,
         APIKey.model_name == chat_request.model_name,
         APIKey.is_active == True
     ).first()
-    
+
+    # 2. Try provider-wide key (model_name == '*' or '')
+    if not api_key_record:
+        api_key_record = db.query(APIKey).filter(
+            APIKey.user_id == current_user.id,
+            APIKey.provider == chat_request.provider,
+            APIKey.model_name.in_(['*', '']),
+            APIKey.is_active == True
+        ).first()
+
+    # 3. Fallback: any active key for provider
+    if not api_key_record:
+        api_key_record = db.query(APIKey).filter(
+            APIKey.user_id == current_user.id,
+            APIKey.provider == chat_request.provider,
+            APIKey.is_active == True
+        ).first()
+
     if not api_key_record:
         raise HTTPException(
             status_code=400,
-            detail=f"No active API key found for {chat_request.provider} {chat_request.model_name}"
+            detail=f"No active API key found for provider: {chat_request.provider}. Please add one in the API Keys tab."
         )
-    
-    # Decrypt API key
+
     api_key = decrypt_api_key(api_key_record.encrypted_key)
     
-    # Get or create thread
     if chat_request.thread_id:
         thread = db.query(Thread).filter(
             Thread.id == chat_request.thread_id,
@@ -786,7 +967,6 @@ async def chat(
         if not thread:
             raise HTTPException(status_code=404, detail="Thread not found")
     else:
-        # Create new thread
         thread = Thread(
             user_id=current_user.id,
             title=chat_request.message[:50] + "..." if len(chat_request.message) > 50 else chat_request.message,
@@ -797,110 +977,357 @@ async def chat(
         db.commit()
         db.refresh(thread)
     
-    # Save user message
-    user_message = Message(
-        thread_id=thread.id,
-        role="user",
-        content=chat_request.message
-    )
+    # Check if columns exist
+    has_parent_column = True
+    try:
+        db.execute(sa.text("SELECT parent_message_id FROM messages LIMIT 1"))
+    except sa.exc.OperationalError:
+        has_parent_column = False
+    
+    has_branch_column = True
+    try:
+        db.execute(sa.text("SELECT branch_id FROM messages LIMIT 1"))
+    except sa.exc.OperationalError:
+        has_branch_column = False
+    
+    # Build user message dynamically
+    user_message_kwargs = {
+        "thread_id": thread.id,
+        "role": "user",
+        "content": chat_request.message,
+        "created_at": datetime.utcnow(),
+    }
+    if has_parent_column and chat_request.branch_id and has_branch_column:
+        last_message = db.query(Message).filter(
+            Message.thread_id == thread.id,
+            Message.branch_id == chat_request.branch_id,
+            Message.created_at < datetime.utcnow()
+        ).order_by(Message.created_at.desc()).first()
+        if last_message:
+            user_message_kwargs["parent_message_id"] = last_message.id
+    if has_branch_column:
+        user_message_kwargs["branch_id"] = chat_request.branch_id
+    
+    user_message = Message(**user_message_kwargs)
     db.add(user_message)
     db.commit()
     
-    # Get conversation history
-    messages = db.query(Message).filter(Message.thread_id == thread.id).order_by(Message.created_at).all()
+    # Fetch conversation history
+    columns = [
+        Message.id,
+        Message.thread_id,
+        Message.role,
+        Message.content,
+        Message.created_at
+    ]
+    if has_parent_column:
+        columns.append(Message.parent_message_id)
+    if has_branch_column:
+        columns.append(Message.branch_id)
+    
+    query = db.query(*columns).filter(Message.thread_id == thread.id)
+    if has_branch_column and chat_request.branch_id:
+        query = query.filter(Message.branch_id == chat_request.branch_id)
+    elif has_branch_column:
+        query = query.filter(Message.branch_id == None)
+    
+    messages = query.order_by(Message.created_at).all()
     conversation_history = [
-        {"role": msg.role, "content": msg.content}
+        {"role": msg[2], "content": msg[3]}
         for msg in messages
     ]
     
     from litellm import completion
-    from collections.abc import AsyncIterator, Iterator
-
+    
     async def generate_response():
-        try:
-            response_content = ""
+        response_content = ""
+        max_retries = 1
+        retry_count = 0
+        stream_id = chat_request.stream_id or str(uuid.uuid4())
+        start_chunk = chat_request.resume_from_chunk or 0
+        
+        # Initialize cache for this stream_id
+        if stream_id not in STREAMING_CACHE:
+            STREAMING_CACHE[stream_id] = []
+        
+        def extract_content_from_chunk(chunk):
+            if not chunk:
+                logger.warning("Empty chunk received")
+                return ""
             
-            # Check if provider supports streaming properly
-            provider_supports_async_streaming = chat_request.provider.lower() in ['openai', 'anthropic']
-            should_stream = chat_request.stream and provider_supports_async_streaming
+            logger.debug(f"Chunk type: {type(chunk)}, Chunk: {chunk}")
             
-            if should_stream:
-                # For streaming responses with providers that support async streaming
-                response = completion(
-                    model=chat_request.model_name,
-                    messages=conversation_history,
-                    api_key=api_key,
-                    stream=True,
-                )
-                
-                # Handle async streaming
-                async for chunk in response:
-                    chunk_content = ""
-                    if hasattr(chunk, 'choices') and chunk.choices and len(chunk.choices) > 0:
-                        choice = chunk.choices[0]
-                        if hasattr(choice, 'delta') and hasattr(choice.delta, 'content') and choice.delta.content:
-                            chunk_content = choice.delta.content
-                            response_content += chunk_content
-                            yield f"data: {json.dumps({'content': chunk_content})}\n\n"
-            else:
-                # For non-streaming responses or providers with streaming issues
-                response = completion(
-                    model=chat_request.model_name,
-                    messages=conversation_history,
-                    api_key=api_key,
-                    stream=False,
-                )
-                
-                # Handle non-streaming response
-                if hasattr(response, 'choices') and response.choices and len(response.choices) > 0:
-                    choice = response.choices[0]
-                    if hasattr(choice, 'message') and hasattr(choice.message, 'content'):
-                        response_content = choice.message.content
-                    elif hasattr(choice, 'text'):
-                        response_content = choice.text
-                elif hasattr(response, 'text'):
-                    response_content = response.text
+            # Handle string
+            if isinstance(chunk, str):
+                return chunk
+            
+            # Handle dict
+            if isinstance(chunk, dict):
+                for key in ['content', 'text', 'message', 'delta']:
+                    if key in chunk and chunk[key]:
+                        if isinstance(chunk[key], str):
+                            return chunk[key]
+                        elif isinstance(chunk[key], dict) and 'content' in chunk[key]:
+                            return chunk[key]['content'] or ""
+            
+            # Handle objects with .choices
+            if hasattr(chunk, 'choices') and chunk.choices:
+                choice = chunk.choices[0]
+                if hasattr(choice, 'delta') and choice.delta:
+                    if hasattr(choice.delta, 'content') and choice.delta.content:
+                        return choice.delta.content
+                elif hasattr(choice, 'message') and choice.message:
+                    if hasattr(choice.message, 'content') and choice.message.content:
+                        return choice.message.content
+                elif hasattr(choice, 'text') and choice.text:
+                    return choice.text
+            
+            # Handle objects with .content
+                for key in ['content', 'text', 'message', 'delta']:
+                    if key in chunk and chunk[key]:
+                        if isinstance(chunk[key], str):
+                            return chunk[key]
+                        elif isinstance(chunk[key], dict) and 'content' in chunk[key]:
+                            return chunk[key]['content'] or ""
+            
+            if hasattr(chunk, 'content'):
+                content = getattr(chunk, 'content', None)
+                if content:
+                    return content
+            
+            # Handle LiteLLM CustomStreamWrapper and similar
+            for method_name in ['text', 'read']:
+                method = getattr(chunk, method_name, None)
+                if callable(method):
+                    try:
+                        result = method()
+                        # If coroutine, run it
+                        if hasattr(result, '__await__'):
+                            import asyncio
+                            try:
+                                loop = asyncio.get_event_loop()
+                            except RuntimeError:
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+                            result = loop.run_until_complete(result)
+                        if result:
+                            return result
+                    except Exception as e:
+                        logger.warning(f"Failed to extract content via {method_name}(): {e}")
+            # Try .complete_response (dict or string)
+            if hasattr(chunk, 'complete_response'):
+                complete = getattr(chunk, 'complete_response', None)
+                if complete:
+                    if isinstance(complete, dict):
+                        for key in ['content', 'text', 'message', 'delta']:
+                            if key in complete and complete[key]:
+                                if isinstance(complete[key], str):
+                                    return complete[key]
+                                elif isinstance(complete[key], dict) and 'content' in complete[key]:
+                                    return complete[key]['content'] or ""
+                    elif isinstance(complete, str):
+                        return complete
+            # Try .chunks (list of dicts/strings)
+            if hasattr(chunk, 'chunks'):
+                chunks = getattr(chunk, 'chunks', None)
+                if chunks and isinstance(chunks, list):
+                    for c in chunks:
+                        content = extract_content_from_chunk(c)
+                        if content:
+                            return content
+            # Fallback: str(chunk) if not default object repr
+            try:
+                s = str(chunk)
+                if s and not s.startswith('<'):
+                    return s
+            except Exception:
+                pass
+            logger.warning(f"Could not extract content from chunk: {chunk} (type: {type(chunk)}, dir: {dir(chunk)})")
+            return ""
+        
+        def process_sync_generator_safe(generator):
+            content_chunks = []
+            chunk_count = 0
+            max_chunks = 10000
+            
+            try:
+                for chunk in generator:
+                    chunk_count += 1
+                    if chunk_count > max_chunks:
+                        logger.warning(f"Hit max chunks limit ({max_chunks}), stopping iteration")
+                        break
+                        
+                    content = extract_content_from_chunk(chunk)
+                    if content:
+                        content_chunks.append(content)
+                        
+                return content_chunks
+            except Exception as e:
+                logger.error(f"Error processing sync generator: {e}")
+                return content_chunks
+        
+        # Check cache for resuming
+        if start_chunk > 0 and stream_id in STREAMING_CACHE:
+            cached_chunks = STREAMING_CACHE[stream_id][start_chunk:]
+            for i, chunk in enumerate(cached_chunks):
+                yield f"data: {json.dumps({'content': chunk, 'chunk_index': start_chunk + i, 'stream_id': stream_id})}\n\n"
+                await asyncio.sleep(0.01)
+            if cached_chunks:
+                # Do not delete cache here to allow further resumes
+                return
+        
+        content_chunks = []
+        
+        import types
+        async def async_wrap_iter(sync_iter):
+            for item in sync_iter:
+                yield item
+                await asyncio.sleep(0)
+
+        error_msg = ""
+        while retry_count < max_retries:
+            try:
+                logger.info(f"Attempt {retry_count + 1}: Making request to {chat_request.model_name}")
+
+                completion_kwargs = {
+                    'model': chat_request.model_name.split(":")[0],
+                    'messages': conversation_history,
+                    'api_key': api_key,
+                    'stream': chat_request.stream,
+                    'timeout': 60,
+                }
+                if chat_request.provider.lower() == 'cohere':
+                    completion_kwargs.update({
+                        'max_tokens': 4000,
+                        'temperature': 0.7
+                    })
+
+                response = await asyncio.to_thread(completion, **completion_kwargs)
+                logger.info(f"Got response, type: {type(response)}")
+
+                if completion_kwargs.get('stream', False):
+                    # Robustly handle both async and sync generators
+                    if hasattr(response, '__aiter__'):
+                        logger.info("Processing async generator")
+                        try:
+                            async for chunk in response:
+                                content = extract_content_from_chunk(chunk)
+                                if content:
+                                    content_chunks.append(content)
+                                    STREAMING_CACHE[stream_id].append(content)
+                        except Exception as async_error:
+                            logger.error(f"Async iteration failed: {async_error}")
+                            # Try to process as sync generator via async wrapper
+                            if isinstance(response, types.GeneratorType):
+                                logger.info("Falling back to async-wrapped sync generator")
+                                async for chunk in async_wrap_iter(response):
+                                    content = extract_content_from_chunk(chunk)
+                                    if content:
+                                        content_chunks.append(content)
+                                        STREAMING_CACHE[stream_id].append(content)
+                            else:
+                                logger.warning("Response is not a generator, treating as single chunk")
+                                content = extract_content_from_chunk(response)
+                                if content:
+                                    content_chunks.append(content)
+                                    STREAMING_CACHE[stream_id].append(content)
+                    elif hasattr(response, '__iter__') and not isinstance(response, (str, bytes, dict)):
+                        logger.info("Processing sync generator")
+                        async for chunk in async_wrap_iter(response):
+                            content = extract_content_from_chunk(chunk)
+                            if content:
+                                content_chunks.append(content)
+                                STREAMING_CACHE[stream_id].append(content)
+                    else:
+                        logger.warning("Response is not a generator, treating as single chunk")
+                        content = extract_content_from_chunk(response)
+                        if content:
+                            content_chunks.append(content)
+                            STREAMING_CACHE[stream_id].append(content)
                 else:
-                    response_content = str(response)
+                    logger.info("Processing single streaming response")
+                    content = extract_content_from_chunk(response)
+                    if content:
+                        content_chunks = [content]
+                        STREAMING_CACHE[stream_id].append(content)
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Attempt {retry_count} failed: {error_msg}")
+            # Removed invalid else:
+            logger.info("Processing non-streaming response")
+            content = extract_content_from_chunk(response)
+            if content:
+                content_chunks = [content]
+                STREAMING_CACHE[stream_id].append(content)
+
+            if content_chunks:
+                logger.info(f"Successfully got {len(content_chunks)} content chunks")
+                break
+            logger.warning("No content chunks extracted, will retry with non-streaming fallback")
+            try:
+                completion_kwargs['stream'] = False
+                non_stream_response = await asyncio.to_thread(completion, **completion_kwargs)
+                content = extract_content_from_chunk(non_stream_response)
+                if content:
+                    content_chunks = [content]
+                    STREAMING_CACHE[stream_id].append(content)
+                    logger.info("Successfully extracted content from non-streaming fallback")
+                    break
+                else:
+                    logger.error("Non-streaming fallback also failed to extract content")
+            except Exception as fallback_error:
+                logger.error(f"Non-streaming fallback failed: {fallback_error}")
+            retry_count += 1
+
+        if retry_count >= max_retries:
+            logger.error(f"All {max_retries} attempts failed")
+            yield f"data: {json.dumps({'error': f'Request failed after {max_retries} attempts: {error_msg}', 'stream_id': stream_id})}\n\n"
+            # Safe deletion
+            if stream_id in STREAMING_CACHE:
+                del STREAMING_CACHE[stream_id]
+            return
+
+        if content_chunks:
+            for i, chunk_content in enumerate(content_chunks[start_chunk:], start=start_chunk):
+                response_content += chunk_content
+                yield f"data: {json.dumps({'content': chunk_content, 'chunk_index': i, 'stream_id': stream_id})}\n\n"
+                if chat_request.stream and len(content_chunks) > 1:
+                    await asyncio.sleep(0.01)
+        else:
+            yield f"data: {json.dumps({'error': 'No content received from AI provider after multiple attempts', 'stream_id': stream_id})}\n\n"
+            # Safe deletion
+            if stream_id in STREAMING_CACHE:
+                del STREAMING_CACHE[stream_id]
+            return
+
+        
+        if response_content.strip():
+            try:
+                # Build assistant message dynamically
+                assistant_message_kwargs = {
+                    "thread_id": thread.id,
+                    "role": "assistant",
+                    "content": response_content,
+                    "created_at": datetime.utcnow(),
+                }
+                if has_branch_column:
+                    assistant_message_kwargs["branch_id"] = chat_request.branch_id
+                if has_parent_column:
+                    assistant_message_kwargs["parent_message_id"] = user_message.id
                 
-                # If user requested streaming but provider doesn't support it, 
-                # simulate streaming by yielding the complete response
-                if chat_request.stream and not provider_supports_async_streaming:
-                    # Simulate streaming by breaking response into chunks
-                    chunk_size = 50
-                    for i in range(0, len(response_content), chunk_size):
-                        chunk = response_content[i:i+chunk_size]
-                        yield f"data: {json.dumps({'content': chunk})}\n\n"
-                        await asyncio.sleep(0.05)  # Small delay to simulate streaming
-
-            # Save assistant message
-            assistant_message = Message(
-                thread_id=thread.id,
-                role="assistant",
-                content=response_content
-            )
-            db.add(assistant_message)
-
-            # Update thread timestamp
-            thread.updated_at = datetime.utcnow()
-            db.commit()
-
-            if chat_request.stream:
-                yield f"data: {json.dumps({'done': True, 'thread_id': str(thread.id)})}\n\n"
-            else:
-                yield json.dumps({
-                    'content': response_content,
-                    'done': True,
-                    'thread_id': str(thread.id)
-                })
-
-        except Exception as e:
-            logger.error(f"Error in chat generation: {str(e)}")
-            logger.exception("Full traceback:")
-            if chat_request.stream:
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-            else:
-                yield json.dumps({'error': str(e)})
+                assistant_message = Message(**assistant_message_kwargs)
+                db.add(assistant_message)
+                thread.updated_at = datetime.utcnow()
+                db.commit()
+                db.refresh(assistant_message)
+                logger.info(f"Saved response ({len(response_content)} chars) to thread {thread.id}")
+            except Exception as db_error:
+                logger.error(f"Database save failed: {db_error}")
+        
+        yield f"data: {json.dumps({'done': True, 'thread_id': str(thread.id), 'total_chunks': len(content_chunks), 'stream_id': stream_id})}\n\n"
+        # Safe deletion
+        if stream_id in STREAMING_CACHE:
+            del STREAMING_CACHE[stream_id]
     
     if chat_request.stream:
         return StreamingResponse(
@@ -911,29 +1338,51 @@ async def chat(
                 "Connection": "keep-alive",
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Headers": "*",
+                "X-Accel-Buffering": "no",
             }
         )
     else:
-        async for response in generate_response():
-            return json.loads(response)
+        full_content = ""
+        error_message = None
+        thread_id = None
+        total_chunks = 0
+        stream_id = chat_request.stream_id or str(uuid.uuid4())
+        
+        try:
+            async for chunk in generate_response():
+                if chunk.startswith("data: "):
+                    data = json.loads(chunk[6:])
+                    if 'content' in data:
+                        full_content += data['content']
+                    elif 'error' in data:
+                        error_message = data['error']
+                    elif 'thread_id' in data:
+                        thread_id = data['thread_id']
+                    elif 'total_chunks' in data:
+                        total_chunks = data['total_chunks']
+                    elif 'stream_id' in data:
+                        stream_id = data['stream_id']
+        except Exception as e:
+            logger.error(f"Error collecting non-streaming response: {e}")
+            raise HTTPException(status_code=500, detail=f"Request failed: {str(e)}")
+        
+        if error_message:
+            raise HTTPException(status_code=500, detail=error_message)
+        
+        return {
+            "content": full_content,
+            "thread_id": thread_id or str(thread.id),
+            "done": True,
+            "total_chunks": total_chunks,
+            "stream_id": stream_id
+        }
 
 # Health Check
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "timestamp": datetime.utcnow()}
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
-if __name__ == "__main__":
-    import uvicorn
-    import sys
-    
-    # Check if user wants to generate keys
-    if len(sys.argv) > 1 and sys.argv[1] == "generate-keys":
-        print("🔐 Generating keys for BYOK Chat Backend:")
-        print("=" * 50)
-        print(f"SECRET_KEY={os.urandom(32).hex()}")
-        print(f"ENCRYPTION_KEY={Fernet.generate_key().decode()}")
-        print("=" * 50)
-        print("💡 Copy these to your .env file or environment variables")
-        exit(0)
-    
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.get("/v1/health")
+async def health_check_v1():
+    return {"status": "ok"}
+

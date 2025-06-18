@@ -1,456 +1,292 @@
-
-import { useState, useEffect } from "react";
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
-import { 
-  MessageSquare, 
-  Plus, 
-  Key,
-  Sparkles,
-  LogOut,
-  ChevronLeft,
-  ChevronRight,
-  User
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import { useToast } from "@/hooks/use-toast";
+import React, { createContext, useContext, useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { chatApi } from "@/lib/api";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Button } from '@/components/ui/button';
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+  Dialog,
+  DialogTrigger,
+  DialogContent
+} from '@/components/ui/dialog';
+import { ChatHistorySidebar } from './ChatHistorySidebar';
+import { Key } from 'lucide-react';
+import { ApiKeyManager } from '@/components/api-keys/ApiKeyManager';
+import { ChevronLeft, ChevronRight, LogOut, MessageSquare, Moon, Sun } from 'lucide-react';
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
+import { useAppContext } from "@/context/AppContext";
+import { useNavigate } from "react-router-dom";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip';
+
+interface SidebarContextType {
+  selectedProvider: string;
+  selectedModel: string;
+  setSelectedProvider: (provider: string) => void;
+  setSelectedModel: (model: string) => void;
+}
+
+const SidebarContext = createContext<SidebarContextType | undefined>(undefined);
+
+export function SidebarProvider({ children }: { children: React.ReactNode }) {
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const [selectedModel, setSelectedModel] = useState("");
+  const [collapsed, setCollapsed] = useState(false);
+
+  return (
+    <SidebarContext.Provider value={{ selectedProvider, setSelectedProvider, selectedModel, setSelectedModel }}>
+      {children}
+    </SidebarContext.Provider>
+  );
+}
+
+export function useSidebar() {
+  const context = useContext(SidebarContext);
+  if (!context) {
+    throw new Error("useSidebar must be used within a SidebarProvider");
+  }
+  return context;
+}
 
 interface SidebarProps {
-  activeView: 'chat' | 'api-keys';
-  onViewChange: (view: 'chat' | 'api-keys') => void;
-  selectedModel: string;
-  selectedProvider: string;
-  onModelChange: (model: string) => void;
-  onProviderChange: (provider: string) => void;
-  onThreadSelect?: (threadId: string) => void;
-  onNewChat?: () => void;
-  onLogout?: () => void;
-  currentUser?: any;
-  collapsed: boolean;
-  onToggleCollapse: () => void;
+  onThreadCreated?: (threadId: string) => void;
 }
 
-interface Thread {
-  id: string;
-  title: string;
-  provider: string;
-  model_name: string;
-  created_at: string;
-  updated_at: string;
-}
+export function Sidebar({ onThreadCreated }: SidebarProps) {
+  const { selectedProvider, setSelectedProvider, selectedModel, setSelectedModel } = useSidebar();
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["providers-and-models"],
+    queryFn: chatApi.getProvidersAndModels,
+  });
+  const { currentUser, handleLogout } = useAppContext();
+  const [localCollapsed, setLocalCollapsed] = useState(false);
 
-interface Provider {
-  id: string;
-  name: string;
-}
+  // Chat threads state
+  const { data: threads = [], isLoading: isThreadsLoading } = useQuery({
+    queryKey: ['threads'],
+    queryFn: chatApi.getThreads
+  });
+  const [selectedThread, setSelectedThread] = useState(null);
+  const [apiKeysOpen, setApiKeysOpen] = useState(false);
 
-const API_BASE_URL = "http://localhost:8001";
+  // Handle selecting a thread
+  const navigate = useNavigate();
 
-export function Sidebar({ 
-  activeView, 
-  onViewChange, 
-  selectedModel, 
-  selectedProvider,
-  onModelChange,
-  onProviderChange,
-  onThreadSelect,
-  onNewChat,
-  onLogout,
-  currentUser,
-  collapsed,
-  onToggleCollapse
-}: SidebarProps) {
-  const [threads, setThreads] = useState<Thread[]>([]);
-  const [providers, setProviders] = useState<Provider[]>([]);
-  const [modelsByProvider, setModelsByProvider] = useState<Record<string, string[]>>({});
-  const [loading, setLoading] = useState(false);
-  const [providersLoading, setProvidersLoading] = useState(true);
-  const { toast } = useToast();
+  const handleThreadSelect = (thread) => {
+    setSelectedThread(thread);
+    navigate(`/chat/${thread.id}`);
+    if (onThreadCreated) onThreadCreated(thread.id);
+  };
 
-  const getAuthToken = () => localStorage.getItem('authToken');
+  const handleNewChat = async () => {
+    if (!selectedProvider || !selectedModel) return;
+    try {
+      const thread = await chatApi.createThread({
+        title: "New Chat",
+        provider: selectedProvider,
+        model_name: selectedModel,
+      });
+      setSelectedThread(thread);
+      if (onThreadCreated) onThreadCreated(thread.id);
+      navigate(`/chat/${thread.id}`);
+      if (typeof window !== 'undefined' && window.location) {
+        window.dispatchEvent(new Event('focus'));
+      }
+    } catch (err) {
+      // TODO: Add toast or error handling
+      console.error('Failed to create new chat thread', err);
+    }
+  };
+
+  const handleApiKeys = () => {
+    navigate('/api-keys');
+  };
+
 
   useEffect(() => {
-    loadProvidersAndModels();
-  }, []);
-
-  useEffect(() => {
-    if (activeView === 'chat') {
-      loadThreads();
-    }
-  }, [activeView]);
-
-  const loadProvidersAndModels = async () => {
-    setProvidersLoading(true);
-    try {
-      const response = await fetch(`${API_BASE_URL}/providers-and-models`);
-      if (response.ok) {
-        const data = await response.json();
-        setProviders(data.providers);
-        setModelsByProvider(data.models_by_provider);
-        
-        // Set default provider and model if none selected
-        if (!selectedProvider && data.providers.length > 0) {
-          const firstProvider = data.providers[0].id;
-          onProviderChange(firstProvider);
-          const firstModel = data.models_by_provider[firstProvider]?.[0];
-          if (firstModel) {
-            onModelChange(firstModel);
-          }
-        }
+    if (data && !selectedProvider && !selectedModel && data.providers?.length > 0) {
+      const firstProvider = data.providers[0].id;
+      setSelectedProvider(firstProvider);
+      localStorage.setItem('selectedProvider', firstProvider);
+      const firstModel = data.models_by_provider[firstProvider]?.[0] || "";
+      if (firstModel) {
+        setSelectedModel(firstModel);
+        localStorage.setItem('selectedModel', firstModel);
       }
-    } catch (error) {
-      console.error('Failed to load providers and models:', error);
-      toast({
-        title: "Error",
-        description: "Failed to load AI providers and models",
-        variant: "destructive"
-      });
-    } finally {
-      setProvidersLoading(false);
     }
-  };
-
-  const loadThreads = async () => {
-    const token = getAuthToken();
-    if (!token) return;
-
-    setLoading(true);
-    try {
-      const response = await fetch(`${API_BASE_URL}/threads`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
-
-      if (response.ok) {
-        const threadsData = await response.json();
-        setThreads(threadsData);
-      }
-    } catch (error) {
-      console.error('Failed to load threads:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleNewChat = () => {
-    onNewChat?.();
-  };
-
-  const handleThreadSelect = (threadId: string) => {
-    onThreadSelect?.(threadId);
-  };
+  }, [data, selectedProvider, selectedModel, setSelectedProvider, setSelectedModel]);
 
   const handleProviderChange = (providerId: string) => {
-    onProviderChange(providerId);
-    const availableModels = modelsByProvider[providerId] || [];
-    if (availableModels.length > 0) {
-      onModelChange(availableModels[0]);
-    }
+    setSelectedProvider(providerId);
+    localStorage.setItem('selectedProvider', providerId);
+    const availableModels = data?.models_by_provider[providerId] || [];
+    const model = availableModels.length > 0 ? availableModels[0] : "";
+    setSelectedModel(model);
+    localStorage.setItem('selectedModel', model);
   };
 
-  const formatTimeAgo = (dateString: string) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString();
+  const handleModelChange = (value: string) => {
+    setSelectedModel(value);
+    localStorage.setItem('selectedModel', value);
   };
 
-  const currentProviderModels = modelsByProvider[selectedProvider] || [];
 
-  if (collapsed) {
+  const handleCollapse = () => {
+    setLocalCollapsed(!localCollapsed);
+  };
+
+  if (error) {
     return (
-      <aside className="bg-slate-900/50 backdrop-blur-xl border-r border-slate-700/50 flex flex-col transition-all duration-300 h-full w-16">
-        {/* Header */}
-        <div className="p-2 border-b border-slate-700/50 flex flex-col items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-            <Sparkles className="w-4 h-4 text-white" />
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onToggleCollapse}
-            className="text-slate-400 hover:text-white p-2 w-8 h-8"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </Button>
-        </div>
+      <div className="flex flex-col items-center justify-center h-full p-4 bg-sidebar/80">
+        <span className="text-red-400 text-lg font-bold mb-2">Failed to load providers</span>
+        <span className="text-sidebar-foreground/70 text-sm mb-4">{error.message}</span>
+        <Button variant="outline" onClick={() => window.location.reload()}>Retry</Button>
+      </div>
+    );
+  }
 
-        {/* New Chat Button */}
-        <div className="p-2">
-          <Button 
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white border-0 p-2 h-8"
-            onClick={handleNewChat}
-          >
-            <Plus className="w-4 h-4" />
-          </Button>
+  if (isLoading || !data || !data.providers?.length) {
+    return (
+      <div className="flex flex-col h-full justify-center items-center bg-sidebar/80">
+        <div className="animate-pulse flex flex-col gap-4 w-5/6">
+          <div className="h-8 bg-sidebar-accent/40 rounded w-2/3 mx-auto" />
+          <div className="h-10 bg-blue-600/50 rounded w-full" />
+          <div className="h-10 bg-sidebar-accent/40 rounded w-full" />
+          <div className="h-6 bg-sidebar-accent/30 rounded w-1/2 mx-auto" />
+          <div className="h-32 bg-sidebar-accent/20 rounded w-full" />
         </div>
-
-        {/* Navigation */}
-        <div className="p-2 flex flex-col gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            className={cn(
-              "w-8 h-8 p-0",
-              activeView === 'chat' 
-                ? "bg-blue-600 text-white" 
-                : "text-slate-400 hover:text-white hover:bg-slate-700/50"
-            )}
-            onClick={() => onViewChange('chat')}
-          >
-            <MessageSquare className="w-3 h-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={cn(
-              "w-8 h-8 p-0",
-              activeView === 'api-keys' 
-                ? "bg-blue-600 text-white" 
-                : "text-slate-400 hover:text-white hover:bg-slate-700/50"
-            )}
-            onClick={() => onViewChange('api-keys')}
-          >
-            <Key className="w-3 h-3" />
-          </Button>
-        </div>
-
-        {/* User Profile at bottom */}
-        <div className="mt-auto p-2 border-t border-slate-700/50">
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="w-8 h-8 p-0 text-slate-400 hover:text-white hover:bg-slate-700/50"
-              >
-                <Avatar className="w-6 h-6">
-                  <AvatarFallback className="bg-slate-700 text-slate-300 text-xs">
-                    {currentUser?.email?.charAt(0).toUpperCase() || <User className="w-3 h-3" />}
-                  </AvatarFallback>
-                </Avatar>
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-64 bg-slate-800 border-slate-700" side="right" align="end">
-              <div className="space-y-3">
-                <div className="text-sm">
-                  <p className="text-white font-medium">{currentUser?.email}</p>
-                  <p className="text-slate-400 text-xs">Signed in</p>
-                </div>
-                {onLogout && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={onLogout}
-                    className="w-full justify-start text-slate-400 hover:text-white hover:bg-slate-700/50"
-                  >
-                    <LogOut className="w-4 h-4 mr-2" />
-                    Sign out
-                  </Button>
-                )}
-              </div>
-            </PopoverContent>
-          </Popover>
-        </div>
-      </aside>
+      </div>
     );
   }
 
   return (
-    <aside className="bg-slate-900/50 backdrop-blur-xl border-r border-slate-700/50 flex flex-col transition-all duration-300 h-full w-80">
-      {/* Header */}
-      <div className="p-4 border-b border-slate-700/50">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-              <Sparkles className="w-4 h-4 text-white" />
-            </div>
-            <div className="flex-1">
-              <h1 className="text-xl font-bold text-white">BYOK Chat</h1>
-            </div>
-          </div>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onToggleCollapse}
-              className="text-slate-400 hover:text-white p-2"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </Button>
-          </div>
-        </div>
-        
-        <Button 
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white border-0"
-          onClick={handleNewChat}
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          New Chat
-        </Button>
-      </div>
-
-      {/* Navigation */}
-      <div className="p-4 border-b border-slate-700/50">
-        <div className="flex gap-1 bg-slate-800/50 rounded-lg p-1">
-          <Button
-            variant={activeView === 'chat' ? 'default' : 'ghost'}
-            size="sm"
-            className={cn(
-              "flex-1 text-xs",
-              activeView === 'chat' 
-                ? "bg-blue-600 text-white" 
-                : "text-slate-400 hover:text-white hover:bg-slate-700/50"
-            )}
-            onClick={() => onViewChange('chat')}
-          >
-            <MessageSquare className="w-3 h-3 mr-1" />
-            Chats
-          </Button>
-          <Button
-            variant={activeView === 'api-keys' ? 'default' : 'ghost'}
-            size="sm"
-            className={cn(
-              "flex-1 text-xs",
-              activeView === 'api-keys' 
-                ? "bg-blue-600 text-white" 
-                : "text-slate-400 hover:text-white hover:bg-slate-700/50"
-            )}
-            onClick={() => onViewChange('api-keys')}
-          >
-            <Key className="w-3 h-3 mr-1" />
-            API Keys
-          </Button>
-        </div>
-      </div>
-
-      {activeView === 'chat' && (
-        <>
-          {/* Model Selector */}
-          <div className="p-4 border-b border-slate-700/50">
-            <label className="text-xs font-medium text-slate-400 mb-2 block">
-              Model Selection
-            </label>
-            {providersLoading ? (
-              <div className="text-center text-slate-400 py-4">Loading providers...</div>
-            ) : (
-              <div className="space-y-2">
-                <select 
-                  value={selectedProvider}
-                  onChange={(e) => handleProviderChange(e.target.value)}
-                  className="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  disabled={providersLoading}
+    <TooltipProvider>
+      <div
+        className={`relative flex flex-col h-full transition-all duration-300 bg-sidebar/70 backdrop-blur-lg shadow-xl border-r border-sidebar-border ${localCollapsed ? "w-16" : "w-72"}`}
+        style={{ minWidth: localCollapsed ? '4rem' : '18rem' }}
+      >
+        {/* App Heading/Logo */}
+        <div className={`sticky top-0 z-30 flex flex-col bg-sidebar/80 ${localCollapsed ? 'items-center pt-4' : 'px-4 pt-4'} pb-2`}>
+          <div className="flex items-center w-full mb-4">
+            <span className="font-bold text-2xl tracking-tight text-sidebar-foreground drop-shadow-lg transition-all duration-300 flex-1">BYOK Chat</span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  className="ml-2 p-1 rounded-full hover:bg-sidebar-accent/60 transition-colors"
+                  onClick={handleCollapse}
+                  aria-label={localCollapsed ? "Expand sidebar" : "Collapse sidebar"}
                 >
-                  {providers.map(provider => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.name}
-                    </option>
-                  ))}
-                </select>
-                <select 
-                  value={selectedModel}
-                  onChange={(e) => onModelChange(e.target.value)}
-                  className="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  disabled={currentProviderModels.length === 0}
-                >
-                  {currentProviderModels.map(model => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
-                </select>
-                {currentProviderModels.length === 0 && selectedProvider && (
-                  <p className="text-xs text-amber-400">No models available for this provider</p>
-                )}
-              </div>
-            )}
+                  {localCollapsed ? <ChevronRight size={22} /> : <ChevronLeft size={22} />}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>{localCollapsed ? "Expand sidebar" : "Collapse sidebar"}</TooltipContent>
+            </Tooltip>
           </div>
-
-          {/* Conversations - Fixed height with scroll */}
-          <div className="flex-1 flex flex-col min-h-0">
-            <div className="p-4 pb-2">
-              <h3 className="text-xs font-medium text-slate-400">Recent Conversations</h3>
-            </div>
-            <div className="flex-1 px-4 pb-4 min-h-0">
-              <ScrollArea className="h-full">
-                {loading ? (
-                  <div className="text-center text-slate-400 py-4">Loading...</div>
-                ) : (
-                  <div className="space-y-2 pr-2">
-                    {threads.map((thread) => (
-                      <div
-                        key={thread.id}
-                        className="p-3 rounded-lg bg-slate-800/30 hover:bg-slate-700/30 transition-colors cursor-pointer group"
-                        onClick={() => handleThreadSelect(thread.id)}
-                      >
-                        <div className="flex items-start justify-between mb-1">
-                          <h4 className="text-sm font-medium text-white truncate flex-1">
-                            {thread.title}
-                          </h4>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs text-slate-400">{formatTimeAgo(thread.updated_at)}</span>
-                          <Badge variant="secondary" className="text-xs bg-slate-700/50 text-slate-300">
-                            {thread.model_name}
-                          </Badge>
-                        </div>
-                      </div>
+          {/* New Chat Button */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                className={`mb-2 flex items-center justify-center w-full rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 shadow transition-all ${localCollapsed ? 'w-10 h-10 p-0 justify-center mx-auto' : ''}`}
+                aria-label="New Chat"
+                title="New Chat"
+                onClick={handleNewChat}
+              >
+                <MessageSquare className="w-5 h-5" />
+                {!localCollapsed && <span className="ml-2">New Chat</span>}
+              </button>
+            </TooltipTrigger>
+            {localCollapsed && <TooltipContent>New Chat</TooltipContent>}
+          </Tooltip>
+          {/* API Key Button below New Chat, styled same as New Chat */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={handleApiKeys}
+                className={`mb-3 flex items-center justify-center w-full rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 shadow transition-all ${localCollapsed ? 'w-10 h-10 p-0 justify-center mx-auto' : ''}`}
+                aria-label="API Keys"
+                title="API Keys"
+              >
+                <Key className="w-5 h-5" />
+                {!localCollapsed && <span className="ml-2">API Keys</span>}
+              </button>
+            </TooltipTrigger>
+            {localCollapsed && <TooltipContent>API Keys</TooltipContent>}
+          </Tooltip>
+        </div>
+        {/* Main Content */}
+        <div className={`flex flex-col flex-1 w-full transition-all duration-300 ${localCollapsed ? 'px-1' : 'px-4'}`}>
+          {/* Settings */}
+          {!localCollapsed && (
+            <div className="flex flex-col gap-4">
+              <h2 className="text-lg font-semibold text-sidebar-foreground mb-2">Settings</h2>
+              <div className="mb-1">
+                <label className="text-xs font-semibold text-sidebar-foreground uppercase tracking-widest">Provider</label>
+                <Select value={selectedProvider || ""} onValueChange={handleProviderChange} disabled={isLoading}>
+                  <SelectTrigger className="bg-sidebar-accent/80 text-sidebar-foreground w-full rounded-lg shadow-inner focus:ring-2 focus:ring-blue-500">
+                    <SelectValue placeholder="Select provider" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {data.providers.map((provider) => (
+                      <SelectItem key={provider.id} value={provider.id}>
+                        {provider.name}
+                      </SelectItem>
                     ))}
-                    {threads.length === 0 && !loading && (
-                      <div className="text-center text-slate-500 py-8">
-                        <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                        <p className="text-sm">No conversations yet</p>
-                        <p className="text-xs">Start a new chat to begin</p>
-                      </div>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="mb-1">
+                <label className="text-xs font-semibold text-sidebar-foreground uppercase tracking-widest">Model</label>
+                <Select value={selectedModel || ""} onValueChange={handleModelChange} disabled={isLoading || !selectedProvider}>
+                  <SelectTrigger className="bg-sidebar-accent/80 text-sidebar-foreground w-full rounded-lg shadow-inner focus:ring-2 focus:ring-blue-500">
+                    <SelectValue placeholder="Select model" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {isLoading ? (
+                      <div className="flex items-center gap-2 p-2 text-sidebar-foreground text-sm"><span className="animate-spin">⏳</span> Loading models...</div>
+                    ) : data.models_by_provider[selectedProvider]?.length ? (
+                      data.models_by_provider[selectedProvider].map((model) => (
+                        <SelectItem key={model} value={model}>
+                          {model}
+                        </SelectItem>
+                      ))
+                    ) : (
+                      <div className="flex items-center gap-2 p-2 text-sidebar-foreground text-sm"><span>🚫</span> No models available</div>
                     )}
-                  </div>
-                )}
-              </ScrollArea>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-          </div>
-        </>
-      )}
-
-      {/* User Profile at bottom */}
-      <div className="p-4 border-t border-slate-700/50">
-        <div className="flex items-center gap-3">
-          <Avatar className="w-8 h-8">
-            <AvatarFallback className="bg-slate-700 text-slate-300">
-              {currentUser?.email?.charAt(0).toUpperCase() || <User className="w-4 h-4" />}
-            </AvatarFallback>
-          </Avatar>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-white truncate">{currentUser?.email}</p>
-            <p className="text-xs text-slate-400">Signed in</p>
-          </div>
-          {onLogout && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onLogout}
-              className="text-slate-400 hover:text-white p-2"
-            >
-              <LogOut className="w-4 h-4" />
-            </Button>
+          )}
+          {/* Chat history only when expanded */}
+          {!localCollapsed && (
+            <div className="flex-1 min-h-0 overflow-y-auto mt-2 mb-2">
+              <ChatHistorySidebar threads={threads} isThreadsLoading={isThreadsLoading} selectedThread={selectedThread} handleThreadSelect={handleThreadSelect} />
+            </div>
           )}
         </div>
+        {/* User Info & Logout at bottom */}
+        {!localCollapsed && currentUser && (
+          <div className="sticky bottom-0 left-0 w-full bg-sidebar/90 border-t border-sidebar-border px-4 py-3 flex flex-col gap-2 z-20">
+            <div className="flex items-center gap-3">
+              <Avatar className="w-9 h-9">
+                {currentUser.avatar_url ? (
+                  <AvatarImage src={currentUser.avatar_url} alt={currentUser.name || currentUser.email} />
+                ) : (
+                  <AvatarFallback>{(currentUser.name || currentUser.email || '?').slice(0,2).toUpperCase()}</AvatarFallback>
+                )}
+              </Avatar>
+              <div className="flex flex-col min-w-0">
+                <span className="font-semibold text-sidebar-foreground truncate">{currentUser.name || 'User'}</span>
+                <span className="text-xs text-sidebar-foreground/70 truncate">{currentUser.email}</span>
+              </div>
+            </div>
+            <Button variant="destructive" size="sm" className="w-full mt-2" onClick={handleLogout}>
+              <LogOut className="w-4 h-4 mr-2" /> Log out
+            </Button>
+          </div>
+        )}
+
       </div>
-    </aside>
+    </TooltipProvider>
   );
 }

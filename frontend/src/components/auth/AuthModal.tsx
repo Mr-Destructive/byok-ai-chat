@@ -6,52 +6,42 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
+import { Separator } from "@/components/ui/separator";
+import { authApi } from "@/lib/api";
 
 interface AuthModalProps {
   onAuthSuccess: (token: string, user: any) => void;
+  initialTab?: 'login' | 'register';
 }
 
-const API_BASE_URL = "http://localhost:8001";
-
-export function AuthModal({ onAuthSuccess }: AuthModalProps) {
+export function AuthModal({ onAuthSuccess, initialTab = 'login' }: AuthModalProps) {
   const [isLoading, setIsLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<'login' | 'register'>(initialTab);
   const [loginData, setLoginData] = useState({ email: '', password: '' });
   const [registerData, setRegisterData] = useState({ email: '', password: '', confirmPassword: '' });
   const { toast } = useToast();
+  
+  // Helper function to switch tabs
+  const switchToLogin = () => setActiveTab('login');
+  const switchToRegister = () => setActiveTab('register');
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(loginData),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        localStorage.setItem('authToken', data.access_token);
-        
-        // Get user info
-        const userResponse = await fetch(`${API_BASE_URL}/auth/me`, {
-          headers: { 'Authorization': `Bearer ${data.access_token}` },
-        });
-        
-        if (userResponse.ok) {
-          const user = await userResponse.json();
-          onAuthSuccess(data.access_token, user);
-          toast({ title: "Login successful", description: "Welcome back!" });
-        }
-      } else {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Login failed');
-      }
-    } catch (error) {
+      const { access_token } = await authApi.login(loginData.email, loginData.password);
+      localStorage.setItem('authToken', access_token);
+      
+      // Get user info
+      const user = await authApi.getMe();
+      onAuthSuccess(access_token, user);
+      toast({ title: "Login successful", description: "Welcome back!" });
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Please check your credentials";
       toast({
         title: "Login failed",
-        description: error instanceof Error ? error.message : "Please check your credentials",
+        description: errorMessage,
         variant: "destructive"
       });
     } finally {
@@ -74,28 +64,21 @@ export function AuthModal({ onAuthSuccess }: AuthModalProps) {
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: registerData.email,
-          password: registerData.password,
-        }),
+      await authApi.register(registerData.email, registerData.password, registerData.email);
+      toast({ 
+        title: "Registration successful", 
+        description: "Please log in with your credentials" 
       });
-
-      if (response.ok) {
-        toast({ title: "Registration successful", description: "Please log in with your credentials" });
-        // Auto-switch to login tab
-        setLoginData({ email: registerData.email, password: '' });
-        setRegisterData({ email: '', password: '', confirmPassword: '' });
-      } else {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Registration failed');
-      }
-    } catch (error) {
+      
+      // Auto-switch to login tab
+      setLoginData(prev => ({ ...prev, email: registerData.email, password: '' }));
+      setRegisterData({ email: '', password: '', confirmPassword: '' });
+      setActiveTab('login');
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : "Please try again";
       toast({
         title: "Registration failed",
-        description: error instanceof Error ? error.message : "Please try again",
+        description: errorMessage,
         variant: "destructive"
       });
     } finally {
@@ -113,45 +96,63 @@ export function AuthModal({ onAuthSuccess }: AuthModalProps) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Tabs defaultValue="login" className="w-full">
-            <TabsList className="grid w-full grid-cols-2 bg-slate-700">
-              <TabsTrigger value="login" className="data-[state=active]:bg-blue-600">Login</TabsTrigger>
-              <TabsTrigger value="register" className="data-[state=active]:bg-blue-600">Register</TabsTrigger>
+          <Tabs 
+            value={activeTab} 
+            onValueChange={(v) => setActiveTab(v as 'login' | 'register')}
+            defaultValue="login" 
+            className="w-full space-y-6"
+          >
+            <TabsList className="grid w-full grid-cols-2 bg-slate-700/50 p-1 h-auto rounded-lg">
+              <TabsTrigger 
+                value="login" 
+                className="py-2 rounded-md data-[state=active]:bg-blue-600 data-[state=active]:text-white data-[state=active]:shadow-sm transition-all"
+              >
+                Sign In
+              </TabsTrigger>
+              <TabsTrigger 
+                value="register" 
+                className="py-2 rounded-md data-[state=active]:bg-blue-600 data-[state=active]:text-white data-[state=active]:shadow-sm transition-all"
+              >
+                Create Account
+              </TabsTrigger>
             </TabsList>
             
-            <TabsContent value="login" className="space-y-4">
+            <TabsContent value="login">
               <form onSubmit={handleLogin} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="email" className="text-slate-300">Email</Label>
+                  <Label htmlFor="email">Email</Label>
                   <Input
                     id="email"
                     type="email"
+                    placeholder="m@example.com"
                     value={loginData.email}
-                    onChange={(e) => setLoginData(prev => ({ ...prev, email: e.target.value }))}
-                    placeholder="Enter your email"
-                    className="bg-slate-700 border-slate-600 text-white"
-                    required
+                    onChange={(e) => setLoginData({ ...loginData, email: e.target.value })}
+                    disabled={isLoading}
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="password" className="text-slate-300">Password</Label>
+                  <div className="flex items-center">
+                    <Label htmlFor="password">Password</Label>
+                    <a href="#" className="ml-auto inline-block text-sm underline">
+                      Forgot your password?
+                    </a>
+                  </div>
                   <Input
                     id="password"
                     type="password"
                     value={loginData.password}
-                    onChange={(e) => setLoginData(prev => ({ ...prev, password: e.target.value }))}
-                    placeholder="Enter your password"
-                    className="bg-slate-700 border-slate-600 text-white"
-                    required
+                    onChange={(e) => setLoginData({ ...loginData, password: e.target.value })}
+                    disabled={isLoading}
                   />
                 </div>
-                <Button 
-                  type="submit" 
-                  className="w-full bg-blue-600 hover:bg-blue-700"
-                  disabled={isLoading}
-                >
-                  {isLoading ? 'Logging in...' : 'Login'}
+                <Button className="w-full flex items-center justify-center gap-2" disabled={isLoading}>
+                  {isLoading && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>}
+                  {isLoading ? 'Signing in...' : 'Sign in'}
                 </Button>
+                <div className="text-center mt-2">
+                  <span className="text-sm text-slate-400">Don’t have an account?</span>
+                  <button type="button" className="ml-2 text-blue-400 hover:underline focus:outline-none" onClick={() => setActiveTab('register')}>Register</button>
+                </div>
               </form>
             </TabsContent>
             
@@ -190,20 +191,70 @@ export function AuthModal({ onAuthSuccess }: AuthModalProps) {
                     value={registerData.confirmPassword}
                     onChange={(e) => setRegisterData(prev => ({ ...prev, confirmPassword: e.target.value }))}
                     placeholder="Confirm your password"
-                    className="bg-slate-700 border-slate-600 text-white"
+                    className="bg-slate-700 border-slate-600 text-white focus:ring-blue-500 focus:border-blue-500"
                     required
                   />
                 </div>
-                <Button 
-                  type="submit" 
-                  className="w-full bg-blue-600 hover:bg-blue-700"
-                  disabled={isLoading}
-                >
-                  {isLoading ? 'Creating account...' : 'Create Account'}
-                </Button>
+                <Button
+                    type="submit"
+                    className="w-full flex items-center justify-center gap-2"
+                    disabled={isLoading}
+                  >
+                    {isLoading && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>}
+                    {isLoading ? 'Registering...' : 'Create account'}
+                  </Button>
               </form>
+              <div className="text-center text-sm">
+                <button 
+                  type="button" 
+                  onClick={switchToLogin}
+                  className="text-blue-400 hover:text-blue-300 font-medium transition-colors"
+                >
+                  Already have an account? Sign in
+                </button>
+              </div>
             </TabsContent>
           </Tabs>
+          
+          <div className="mt-6 text-center text-sm">
+            {activeTab === 'login' ? (
+              <p className="text-slate-400">
+                Don't have an account?{' '}
+                <button 
+                  type="button" 
+                  onClick={switchToRegister}
+                  className="text-blue-400 hover:text-blue-300 font-medium transition-colors"
+                >
+                  Sign up
+                </button>
+              </p>
+            ) : (
+              <p className="text-slate-400">
+                Already have an account?{' '}
+                <button 
+                  type="button" 
+                  onClick={switchToLogin}
+                  className="text-blue-400 hover:text-blue-300 font-medium transition-colors"
+                >
+                  Sign in
+                </button>
+              </p>
+            )}
+          </div>
+          
+          <div className="mt-6">
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-slate-700"></div>
+              </div>
+              <div className="relative flex justify-center text-sm">
+                <span className="px-2 bg-slate-800 text-slate-400">Secure & Private</span>
+              </div>
+            </div>
+            <p className="mt-4 text-center text-xs text-slate-500">
+              Your data is encrypted and never shared with third parties.
+            </p>
+          </div>
         </CardContent>
       </Card>
     </div>

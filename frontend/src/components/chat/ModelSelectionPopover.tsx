@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/popover";
 import { Shuffle } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { chatApi } from "@/lib/api"; // Changed from apiKeysApi
 
 interface Provider {
   id: string;
@@ -23,14 +24,12 @@ interface ModelSelectionPopoverProps {
   disabled?: boolean;
 }
 
-const API_BASE_URL = "http://localhost:8000";
-
 export function ModelSelectionPopover({
   currentProvider,
   currentModel,
   onModelSelect,
   className,
-  disabled
+  disabled,
 }: ModelSelectionPopoverProps) {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [modelsByProvider, setModelsByProvider] = useState<Record<string, string[]>>({});
@@ -51,14 +50,21 @@ export function ModelSelectionPopover({
   const loadProvidersAndModels = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/providers-and-models`);
-      if (response.ok) {
-        const data = await response.json();
-        setProviders(data.providers);
-        setModelsByProvider(data.models_by_provider);
+      const data = await chatApi.getProvidersAndModels(); // Changed from apiKeysApi
+      const providersList = Array.isArray(data.providers) ? data.providers : [];
+      setProviders(providersList);
+      setModelsByProvider(data.models_by_provider || {});
+      
+      if (providersList.length > 0 && !selectedProvider) {
+        const firstProvider = providersList[0].id;
+        setSelectedProvider(firstProvider);
+        const firstModel = data.models_by_provider[firstProvider]?.[0];
+        if (firstModel && !selectedModel) {
+          setSelectedModel(firstModel);
+        }
       }
     } catch (error) {
-      console.error('Failed to load providers and models:', error);
+      console.error('Error loading providers and models:', error);
     } finally {
       setLoading(false);
     }
@@ -67,7 +73,7 @@ export function ModelSelectionPopover({
   const handleProviderChange = (providerId: string) => {
     setSelectedProvider(providerId);
     const availableModels = modelsByProvider[providerId] || [];
-    if (availableModels.length > 0) {
+    if (availableModels.length > 0 && !availableModels.includes(selectedModel)) {
       setSelectedModel(availableModels[0]);
     }
   };
@@ -112,13 +118,23 @@ export function ModelSelectionPopover({
                   value={selectedProvider}
                   onChange={(e) => handleProviderChange(e.target.value)}
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  disabled={providers.length === 0}
                 >
-                  {providers.map(provider => (
-                    <option key={provider.id} value={provider.id}>
-                      {provider.name}
-                    </option>
-                  ))}
+                  {providers.length === 0 ? (
+                    <option value="">No providers available</option>
+                  ) : (
+                    providers.map(provider => (
+                      <option key={provider.id} value={provider.id}>
+                        {provider.name}
+                      </option>
+                    ))
+                  )}
                 </select>
+                {providers.length === 0 && (
+                  <p className="text-xs text-amber-400 mt-1">
+                    No providers available. Please check your connection and try again.
+                  </p>
+                )}
               </div>
 
               <div>

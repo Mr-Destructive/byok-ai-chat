@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Plus, Key, Eye, EyeOff, Trash2, Check, AlertCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { apiKeysApi } from "@/lib/api";
 
 interface ApiKey {
   id: string;
@@ -23,24 +24,21 @@ interface Provider {
   name: string;
 }
 
-const API_BASE_URL = "http://localhost:8000";
-
 export function ApiKeyManager() {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [modelsByProvider, setModelsByProvider] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [providersLoading, setProvidersLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
+  const [showModal, setShowModal] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
   const [keyName, setKeyName] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [expandedProviders, setExpandedProviders] = useState<Record<string, boolean>>({});
   const { toast } = useToast();
-
-  // Get auth token from localStorage
-  const getAuthToken = () => localStorage.getItem('authToken');
 
   useEffect(() => {
     loadProvidersAndModels();
@@ -50,20 +48,16 @@ export function ApiKeyManager() {
   const loadProvidersAndModels = async () => {
     setProvidersLoading(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/providers-and-models`);
-      if (response.ok) {
-        const data = await response.json();
-        setProviders(data.providers);
-        setModelsByProvider(data.models_by_provider);
-      } else {
-        throw new Error('Failed to load providers and models');
-      }
+      const data = await apiKeysApi.getProvidersAndModels();
+      const providersList = Array.isArray(data.providers) ? data.providers : [];
+      setProviders(providersList);
+      setModelsByProvider(data.models_by_provider || {});
     } catch (error) {
       console.error('Error loading providers and models:', error);
       toast({
         title: "Error",
         description: "Failed to load available providers and models",
-        variant: "destructive"
+        variant: "destructive",
       });
     } finally {
       setProvidersLoading(false);
@@ -71,36 +65,16 @@ export function ApiKeyManager() {
   };
 
   const loadApiKeys = async () => {
-    const token = getAuthToken();
-    if (!token) {
-      toast({
-        title: "Authentication Required",
-        description: "Please log in to manage API keys",
-        variant: "destructive"
-      });
-      setLoading(false);
-      return;
-    }
-
     try {
-      const response = await fetch(`${API_BASE_URL}/api-keys`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      });
-
-      if (response.ok) {
-        const keys = await response.json();
-        setApiKeys(keys);
-      } else {
-        throw new Error('Failed to load API keys');
-      }
+      const keys = await apiKeysApi.getApiKeys();
+      setApiKeys(keys);
+      localStorage.setItem('apiKeys', JSON.stringify(keys.filter((k: ApiKey) => k.is_active)));
     } catch (error) {
       console.error('Error loading API keys:', error);
       toast({
         title: "Error",
-        description: "Failed to load API keys",
-        variant: "destructive"
+        description: "Failed to load API keys. Please log in again.",
+        variant: "destructive",
       });
     } finally {
       setLoading(false);
@@ -112,94 +86,59 @@ export function ApiKeyManager() {
       toast({
         title: "Missing fields",
         description: "Please fill in all required fields",
-        variant: "destructive"
-      });
-      return;
-    }
-
-    const token = getAuthToken();
-    if (!token) {
-      toast({
-        title: "Authentication Required",
-        description: "Please log in to add API keys",
-        variant: "destructive"
+        variant: "destructive",
       });
       return;
     }
 
     setSubmitting(true);
-
     try {
-      const response = await fetch(`${API_BASE_URL}/api-keys`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          provider: selectedProvider,
-          model_name: selectedModel,
-          api_key: apiKey,
-          key_name: keyName,
-        }),
+      await apiKeysApi.createApiKey({
+        provider: selectedProvider,
+        model_name: selectedModel,
+        key_name: keyName,
+        api_key: apiKey,
       });
-
-      if (response.ok) {
-        const newKey = await response.json();
-        setApiKeys(prev => [...prev, newKey]);
-        setShowForm(false);
-        setSelectedProvider('');
-        setSelectedModel('');
-        setKeyName('');
-        setApiKey('');
-        
-        toast({
-          title: "API key added",
-          description: "Your API key has been securely stored",
-        });
-      } else {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to add API key');
-      }
+      await loadApiKeys();
+      setShowModal(false);
+      setSelectedProvider('');
+      setSelectedModel('');
+      setKeyName('');
+      setApiKey('');
+      toast({
+        title: "Success",
+        description: "API key added successfully",
+      });
     } catch (error) {
       console.error('Error adding API key:', error);
       toast({
         title: "Error",
-        description: error instanceof Error ? error.message : "Failed to add API key",
-        variant: "destructive"
+        description: error instanceof Error ? error.message : 'Failed to add API key',
+        variant: "destructive",
       });
     } finally {
       setSubmitting(false);
     }
   };
 
-  const deleteKey = async (keyId: string) => {
-    const token = getAuthToken();
-    if (!token) return;
+  const handleDeleteKey = async (keyId: string) => {
+    if (!window.confirm('Are you sure you want to delete this API key? This action cannot be undone.')) {
+      return;
+    }
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api-keys/${keyId}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+      await apiKeysApi.deleteApiKey(keyId);
+      await loadApiKeys();
+      toast({
+        title: "Success",
+        description: "API key deleted successfully",
       });
-
-      if (response.ok) {
-        setApiKeys(prev => prev.filter(key => key.id !== keyId));
-        toast({
-          title: "API key deleted",
-          description: "The API key has been removed",
-        });
-      } else {
-        throw new Error('Failed to delete API key');
-      }
     } catch (error) {
       console.error('Error deleting API key:', error);
       toast({
         title: "Error",
-        description: "Failed to delete API key",
-        variant: "destructive"
+        description: error instanceof Error ? error.message : 'Failed to delete API key',
+        variant: "destructive",
       });
     }
   };
@@ -207,40 +146,43 @@ export function ApiKeyManager() {
   const handleProviderChange = (providerId: string) => {
     setSelectedProvider(providerId);
     const availableModels = modelsByProvider[providerId] || [];
-    if (availableModels.length > 0) {
-      setSelectedModel(availableModels[0]);
-    } else {
-      setSelectedModel('');
-    }
+    setSelectedModel(availableModels.length > 0 ? availableModels[0] : '');
+  };
+
+  const toggleProviderExpansion = (providerId: string) => {
+    setExpandedProviders((prev) => ({
+      ...prev,
+      [providerId]: !prev[providerId],
+    }));
   };
 
   const getProviderDisplayName = (providerId: string) => {
-    const provider = providers.find(p => p.id === providerId);
+    const provider = providers.find((p) => p.id === providerId);
     return provider ? provider.name : providerId;
   };
 
   const getProviderColor = (providerId: string) => {
     const colors: Record<string, string> = {
-      'openai': 'bg-green-500',
-      'anthropic': 'bg-orange-500',
-      'google': 'bg-blue-500',
-      'cohere': 'bg-purple-500',
-      'huggingface': 'bg-yellow-500',
-      'azure': 'bg-blue-600',
-      'bedrock': 'bg-orange-600',
-      'vertex_ai': 'bg-blue-400',
-      'palm': 'bg-green-400',
-      'mistral': 'bg-red-500',
-      'together_ai': 'bg-indigo-500',
-      'openrouter': 'bg-pink-500',
-      'replicate': 'bg-gray-500',
-      'anyscale': 'bg-teal-500',
-      'perplexity': 'bg-cyan-500',
-      'groq': 'bg-lime-500',
-      'deepinfra': 'bg-violet-500',
-      'ai21': 'bg-blue-700',
-      'nlp_cloud': 'bg-emerald-500',
-      'aleph_alpha': 'bg-rose-500',
+      openai: 'bg-green-500',
+      anthropic: 'bg-orange-500',
+      google: 'bg-blue-500',
+      cohere: 'bg-purple-500',
+      huggingface: 'bg-yellow-500',
+      azure: 'bg-blue-600',
+      bedrock: 'bg-orange-600',
+      vertex_ai: 'bg-blue-400',
+      palm: 'bg-green-400',
+      mistral: 'bg-red-500',
+      together_ai: 'bg-indigo-500',
+      openrouter: 'bg-pink-500',
+      replicate: 'bg-gray-500',
+      anyscale: 'bg-teal-500',
+      perplexity: 'bg-cyan-500',
+      groq: 'bg-lime-500',
+      deepinfra: 'bg-violet-500',
+      ai21: 'bg-blue-700',
+      nlp_cloud: 'bg-emerald-500',
+      aleph_alpha: 'bg-rose-500',
     };
     return colors[providerId] || 'bg-slate-500';
   };
@@ -254,36 +196,31 @@ export function ApiKeyManager() {
   }
 
   return (
-    <div className="h-full flex flex-col">
-      {/* Header */}
-      <div className="p-6 border-b border-slate-700/50 bg-slate-900/30 backdrop-blur-sm">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-xl font-semibold text-white">API Key Management</h2>
-            <p className="text-slate-400 mt-1">Securely manage your AI provider API keys</p>
+    <div className="h-full w-full flex flex-col items-center justify-start bg-slate-900 py-8 px-2 overflow-auto">
+      <div className="w-full max-w-3xl flex flex-col gap-6">
+        <div className="p-6 border-b border-slate-700/50 bg-slate-900/30 backdrop-blur-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-semibold text-white">API Key Management</h2>
+              <p className="text-slate-400 mt-1">Securely manage your AI provider API keys</p>
+            </div>
+            <Button
+              onClick={() => setShowModal(true)}
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              <Plus className="mr-2 h-4 w-4" /> Add API Key
+            </Button>
           </div>
-          <Button 
-            onClick={() => setShowForm(!showForm)}
-            className="bg-blue-600 hover:bg-blue-700 text-white"
-          >
-            <Plus className="w-4 h-4 mr-2" />
-            Add API Key
-          </Button>
         </div>
-      </div>
 
-      <ScrollArea className="flex-1 p-6">
-        <div className="space-y-6">
-          {/* Add Key Form */}
-          {showForm && (
-            <Card className="bg-slate-800/50 border-slate-700">
-              <CardHeader>
-                <CardTitle className="text-white">Add New API Key</CardTitle>
-                <CardDescription className="text-slate-400">
-                  Add an API key for one of the supported providers
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
+        {showModal && (
+          <Card className="bg-slate-800 border-slate-700">
+            <CardHeader>
+              <CardTitle className="text-white">Add New API Key</CardTitle>
+              <CardDescription className="text-slate-400">Enter your API key details below.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
                 <div>
                   <Label htmlFor="provider" className="text-slate-300">Provider</Label>
                   <select
@@ -293,7 +230,7 @@ export function ApiKeyManager() {
                     className="w-full mt-1 bg-slate-700 border-slate-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">Select a provider...</option>
-                    {providers.map(provider => (
+                    {providers.map((provider) => (
                       <option key={provider.id} value={provider.id}>
                         {provider.name}
                       </option>
@@ -310,7 +247,8 @@ export function ApiKeyManager() {
                       onChange={(e) => setSelectedModel(e.target.value)}
                       className="w-full mt-1 bg-slate-700 border-slate-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
                     >
-                      {(modelsByProvider[selectedProvider] || []).map(model => (
+                      <option value="">Select a model...</option>
+                      {(modelsByProvider[selectedProvider] || []).map((model) => (
                         <option key={model} value={model}>
                           {model}
                         </option>
@@ -321,7 +259,7 @@ export function ApiKeyManager() {
                     )}
                   </div>
                 )}
-                
+
                 <div>
                   <Label htmlFor="keyName" className="text-slate-300">Key Name</Label>
                   <Input
@@ -332,136 +270,111 @@ export function ApiKeyManager() {
                     className="mt-1 bg-slate-700 border-slate-600 text-white focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
-                
+
                 <div>
                   <Label htmlFor="apiKey" className="text-slate-300">API Key</Label>
-                  <Input
-                    id="apiKey"
-                    type="password"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="Paste your API key here..."
-                    className="mt-1 bg-slate-700 border-slate-600 text-white focus:ring-2 focus:ring-blue-500"
-                  />
+                  <div className="relative">
+                    <Input
+                      id="apiKey"
+                      type={showApiKey ? "text" : "password"}
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                      placeholder="Paste your API key here"
+                      className="mt-1 bg-slate-700 border-slate-600 text-white focus:ring-2 focus:ring-blue-500 pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                    >
+                      {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
                 </div>
-                
-                <div className="flex gap-3 pt-4">
-                  <Button 
-                    onClick={handleAddKey} 
-                    disabled={submitting || !selectedProvider || !selectedModel}
-                    className="bg-blue-600 hover:bg-blue-700"
+
+                <div className="flex gap-3 justify-end">
+                  <Button
+                    className="bg-blue-600 hover:bg-blue-700 text-white"
+                    onClick={handleAddKey}
+                    disabled={submitting || !selectedProvider || !selectedModel || !keyName || !apiKey}
                   >
-                    <Key className="w-4 h-4 mr-2" />
-                    {submitting ? 'Adding...' : 'Add Key'}
+                    {submitting ? 'Adding...' : 'Add API Key'}
                   </Button>
-                  <Button 
-                    variant="outline" 
-                    onClick={() => setShowForm(false)}
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowModal(false)}
                     className="border-slate-600 text-slate-300 hover:bg-slate-700"
                   >
                     Cancel
                   </Button>
                 </div>
-              </CardContent>
-            </Card>
-          )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
-          {/* Providers Overview */}
-          <div>
-            <h3 className="text-lg font-medium text-white mb-4">Supported Providers</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {providers.map(provider => {
-                const providerKeys = apiKeys.filter(key => key.provider === provider.id);
-                const modelCount = modelsByProvider[provider.id]?.length || 0;
-                return (
-                  <Card key={provider.id} className="bg-slate-800/30 border-slate-700">
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-3 mb-2">
-                        <div className={`w-3 h-3 rounded-full ${getProviderColor(provider.id)}`} />
-                        <h4 className="font-medium text-white">{provider.name}</h4>
-                        <Badge variant="secondary" className="ml-auto bg-slate-700 text-slate-300">
-                          {providerKeys.length} key{providerKeys.length !== 1 ? 's' : ''}
-                        </Badge>
-                      </div>
-                      <p className="text-sm text-slate-400">{modelCount} models available</p>
-                    </CardContent>
-                  </Card>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* API Keys List */}
-          <div>
-            <h3 className="text-lg font-medium text-white mb-4">Your API Keys</h3>
-            <div className="space-y-3">
-              {apiKeys.map(key => {
-                const providerDisplayName = getProviderDisplayName(key.provider);
-                
-                return (
-                  <Card key={key.id} className="bg-slate-800/30 border-slate-700">
-                    <CardContent className="p-4">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className={`w-3 h-3 rounded-full ${getProviderColor(key.provider)}`} />
-                          <div>
-                            <h4 className="font-medium text-white">{key.key_name}</h4>
-                            <p className="text-sm text-slate-400">{providerDisplayName} • {key.model_name}</p>
-                          </div>
+        <ScrollArea className="flex-1">
+          {Object.entries(
+            apiKeys.reduce((acc, key) => {
+              acc[key.provider] = acc[key.provider] || [];
+              acc[key.provider].push(key);
+              return acc;
+            }, {} as Record<string, ApiKey[]>)
+          ).map(([providerId, keys]) => (
+            <Card key={providerId} className="mb-4 bg-slate-800 border-slate-700">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Key className="h-5 w-5 text-slate-300" />
+                  <CardTitle className="text-white">{getProviderDisplayName(providerId)}</CardTitle>
+                </div>
+                <Badge className={`${getProviderColor(providerId)} text-white`}>
+                  {keys.length} {keys.length === 1 ? 'key' : 'keys'}
+                </Badge>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {keys
+                    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                    .map((key) => (
+                      <div
+                        key={key.id}
+                        className="flex items-center justify-between p-3 bg-slate-700/50 rounded-lg"
+                      >
+                        <div>
+                          <p className="text-sm font-medium text-white">{key.key_name}</p>
+                          <p className="text-xs text-slate-400">Model: {key.model_name}</p>
+                          <p className="text-xs text-slate-400">
+                            Added: {new Date(key.created_at).toLocaleDateString()}
+                          </p>
                         </div>
-                        
                         <div className="flex items-center gap-2">
-                          <Badge 
-                            variant={key.is_active ? 'default' : 'destructive'}
-                            className={
-                              key.is_active 
-                                ? "bg-green-600 text-white" 
-                                : "bg-red-600 text-white"
-                            }
+                          <Badge
+                            variant={key.is_active ? 'default' : 'secondary'}
+                            className={key.is_active ? 'bg-green-600' : 'bg-slate-600'}
                           >
-                            {key.is_active && <Check className="w-3 h-3 mr-1" />}
-                            {!key.is_active && <AlertCircle className="w-3 h-3 mr-1" />}
-                            {key.is_active ? 'active' : 'inactive'}
+                            {key.is_active ? <Check className="h-4 w-4 mr-1" /> : <AlertCircle className="h-4 w-4 mr-1" />}
+                            {key.is_active ? 'Active' : 'Inactive'}
                           </Badge>
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => deleteKey(key.id)}
-                            className="text-slate-400 hover:text-red-400"
+                            onClick={() => handleDeleteKey(key.id)}
+                            className="text-red-400 hover:text-red-300 hover:bg-slate-600"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>
                       </div>
-                      
-                      <p className="text-xs text-slate-500 mt-2">
-                        Created: {new Date(key.created_at).toLocaleDateString()}
-                      </p>
-                    </CardContent>
-                  </Card>
-                );
-              })}
-              
-              {apiKeys.length === 0 && (
-                <Card className="bg-slate-800/30 border-slate-700 border-dashed">
-                  <CardContent className="p-8 text-center">
-                    <Key className="w-12 h-12 text-slate-500 mx-auto mb-4" />
-                    <h4 className="font-medium text-slate-300 mb-2">No API keys yet</h4>
-                    <p className="text-slate-500 mb-4">Add your first API key to start using BYOK Chat</p>
-                    <Button 
-                      onClick={() => setShowForm(true)}
-                      className="bg-blue-600 hover:bg-blue-700"
-                    >
-                      <Plus className="w-4 h-4 mr-2" />
-                      Add Your First Key
-                    </Button>
-                  </CardContent>
-                </Card>
-              )}
-            </div>
-          </div>
-        </div>
-      </ScrollArea>
+                    ))}
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+          {apiKeys.length === 0 && (
+            <p className="text-center text-slate-400">No API keys added yet.</p>
+          )}
+        </ScrollArea>
+      </div>
     </div>
   );
 }
