@@ -130,6 +130,7 @@ class MessageResponse(BaseModel):
     created_at: datetime
     parent_message_id: Optional[str] = None
     branch_id: Optional[str] = None
+    error_info: Optional[str] = None # New field
     
     class Config:
         from_attributes = True
@@ -669,6 +670,15 @@ async def get_thread_messages(
     except sa.exc.OperationalError:
         logger.warning("branch_id column not found in messages table")
         has_branch_column = False
+
+    # Check if error_info exists
+    has_error_info_column = True
+    try:
+        db.execute(sa.text("SELECT error_info FROM messages LIMIT 1"))
+        columns.append(Message.error_info)
+    except sa.exc.OperationalError:
+        logger.warning("error_info column not found in messages table")
+        has_error_info_column = False
     
     query = db.query(*columns).filter(Message.thread_id == thread_id)
     if has_branch_column and branch_id:
@@ -686,7 +696,8 @@ async def get_thread_messages(
             "content": msg_tuple[idx + 3],
             "created_at": msg_tuple[idx + 4],
             "parent_message_id": None,
-            "branch_id": None
+            "branch_id": None,
+            "error_info": None
         }
         idx += 5
         if has_parent_column:
@@ -694,6 +705,10 @@ async def get_thread_messages(
             idx += 1
         if has_branch_column:
             msg_dict["branch_id"] = str(msg_tuple[idx]) if msg_tuple[idx] else None
+            idx += 1
+        if has_error_info_column: # Check the flag from the column check
+            msg_dict["error_info"] = str(msg_tuple[idx]) if msg_tuple[idx] else None
+            idx += 1
         return MessageResponse(**msg_dict)
     
     return [build_message_response(msg) for msg in messages]
@@ -865,6 +880,15 @@ async def get_shared_thread(
         columns.append(Message.branch_id)
     except sa.exc.OperationalError:
         has_branch_column = False
+
+    # Check if error_info exists
+    has_error_info_column_shared = True # Use a different name to avoid scope collision if functions were nested
+    try:
+        db.execute(sa.text("SELECT error_info FROM messages LIMIT 1"))
+        columns.append(Message.error_info)
+    except sa.exc.OperationalError:
+        logger.warning("error_info column not found in messages table (shared link)")
+        has_error_info_column_shared = False
     
     query = db.query(*columns).filter(Message.thread_id == shared_link.thread_id)
     if has_branch_column and branch_id:
@@ -882,7 +906,8 @@ async def get_shared_thread(
             "content": msg_tuple[idx + 3],
             "created_at": msg_tuple[idx + 4],
             "parent_message_id": None,
-            "branch_id": None
+            "branch_id": None,
+            "error_info": None
         }
         idx += 5
         if has_parent_column:
@@ -890,6 +915,10 @@ async def get_shared_thread(
             idx += 1
         if has_branch_column:
             msg_dict["branch_id"] = str(msg_tuple[idx]) if msg_tuple[idx] else None
+            idx += 1
+        if has_error_info_column_shared: # Use the correct flag
+            msg_dict["error_info"] = str(msg_tuple[idx]) if msg_tuple[idx] else None
+            idx += 1
         return MessageResponse(**msg_dict)
     
     return [build_message_response(msg) for msg in messages]
@@ -977,6 +1006,7 @@ async def chat(
     # Check for optional columns
     has_branch_column = hasattr(Message, 'branch_id')
     has_parent_column = hasattr(Message, 'parent_message_id')
+    has_error_info_column = hasattr(Message, 'error_info')
     
     # Build user message
     user_message_kwargs = {
@@ -1026,20 +1056,28 @@ async def chat(
     ]
     
     async def generate_response():
-        response_content = ""
+        response_content = ""  # Initialize before try block
         stream_id = chat_request.stream_id or str(uuid.uuid4())
         start_chunk = chat_request.resume_from_chunk or 0
-        
+        generation_error_occurred = False # Renamed for clarity
+        captured_error_message = None # To store the error message
+        assistant_message_saved = False
+
         if stream_id not in STREAMING_CACHE:
             STREAMING_CACHE[stream_id] = []
-        
+
         # Handle cached chunks for resuming
         if start_chunk > 0 and stream_id in STREAMING_CACHE:
-            for i, chunk in enumerate(STREAMING_CACHE[stream_id][start_chunk:], start=start_chunk):
-                yield f"data: {json.dumps({'content': chunk, 'chunk_index': i, 'stream_id': stream_id})}\n\n"
+            # If resuming, we assume previous parts were processed and saved if necessary.
+            # This simplified logic just serves the cached chunks.
+            # A more robust resume would need to check the DB state.
+            for i, chunk_content in enumerate(STREAMING_CACHE[stream_id][start_chunk:], start=start_chunk):
+                yield f"data: {json.dumps({'content': chunk_content, 'chunk_index': i, 'stream_id': stream_id})}\n\n"
                 await asyncio.sleep(0.01)
+            # If we are only serving cache, we might not want to signal 'done' or save messages again.
+            # For simplicity now, we assume resume means the original stream finished or will be handled by a new call if interrupted.
             return
-        
+
         try:
             model_identifier = f"{chat_request.provider}/{chat_request.model_name}"
             response = await asyncio.to_thread(
@@ -1050,7 +1088,7 @@ async def chat(
                 stream=chat_request.stream,
                 timeout=60
             )
-            
+
             if chat_request.stream:
                 async for chunk in response:
                     content = ""
@@ -1062,11 +1100,11 @@ async def chat(
                         content = delta.get('content', '')
                     
                     if content:
-                        response_content += content
+                        response_content += content # Accumulate content
                         STREAMING_CACHE[stream_id].append(content)
                         yield f"data: {json.dumps({'content': content, 'chunk_index': len(STREAMING_CACHE[stream_id]) - 1, 'stream_id': stream_id})}\n\n"
                         await asyncio.sleep(0.01)
-            else:
+            else: # Not streaming
                 content = ""
                 if hasattr(response, 'choices') and response.choices:
                     content = response.choices[0].message.content
@@ -1074,45 +1112,74 @@ async def chat(
                     content = response['choices'][0]['message']['content']
                 
                 if content:
-                    response_content = content
-                    STREAMING_CACHE[stream_id].append(content)
+                    response_content = content # Accumulate content (overwrite for non-stream)
+                    STREAMING_CACHE[stream_id].append(content) # Cache for consistency, though less critical for non-stream
                     yield f"data: {json.dumps({'content': content, 'chunk_index': 0, 'stream_id': stream_id})}\n\n"
-        
+
         except Exception as e:
-            logger.error(f"Error in completion: {str(e)}")
-            yield f"data: {json.dumps({'error': str(e), 'stream_id': stream_id})}\n\n"
+            generation_error_occurred = True
+            captured_error_message = str(e)
+            logger.error(f"Error in completion: {captured_error_message}")
+            yield f"data: {json.dumps({'error': captured_error_message, 'stream_id': stream_id})}\n\n"
+            # Cache cleanup will happen in finally
+            return # Exit after error, finally block will run
+
+        finally:
+            # Save assistant message
+            if response_content or generation_error_occurred: # Save if there's content OR an error occurred
+                try:
+                    current_content = response_content
+                    if generation_error_occurred and not response_content:
+                        current_content = "Error: Could not complete message."
+
+                    assistant_message_kwargs = {
+                        "thread_id": thread.id,
+                        "role": "assistant",
+                        "content": current_content,
+                        "created_at": datetime.utcnow(),
+                    }
+                    if has_branch_column and chat_request.branch_id: # Check if Message model has branch_id
+                        assistant_message_kwargs["branch_id"] = chat_request.branch_id
+                    if has_parent_column and user_message: # Check if Message model has parent_message_id and user_message exists
+                        assistant_message_kwargs["parent_message_id"] = user_message.id
+
+                    if has_error_info_column and captured_error_message:
+                        assistant_message_kwargs["error_info"] = captured_error_message
+
+                    with db.begin_nested():
+                        assistant_message = Message(**assistant_message_kwargs)
+                        db.add(assistant_message)
+                        db.commit() # Commit assistant message first
+                        db.refresh(assistant_message)
+                        assistant_message_saved = True
+
+                    # Update thread timestamp only if assistant message was saved
+                    if assistant_message_saved:
+                        thread.updated_at = datetime.utcnow()
+                        db.commit() # Commit thread update
+
+                except Exception as db_error:
+                    logger.error(f"Database save failed: {db_error}")
+                    # If streaming, this error needs to be communicated back if possible,
+                    # but finally block doesn't allow yielding. Consider logging or alternative error reporting.
+                    # For now, just log it. The client might receive a DONE message without this specific error.
+                    # If not streaming, this error will be caught by the main endpoint error handler.
+                    if chat_request.stream:
+                         # This yield won't work as we are in finally.
+                         # Consider how to report this if it's critical for streaming clients.
+                         pass
+
+            if not generation_error_occurred: # Send 'done' only if no generation error
+                 yield f"data: {json.dumps({'done': True, 'thread_id': str(thread.id), 'total_chunks': len(STREAMING_CACHE[stream_id]), 'stream_id': stream_id})}\n\n"
+            # else:
+            #    # If an error occurred, the error message should have already been yielded.
+            #    # We might send a specific "error_done" or rely on client to see the error and stop.
+            #    pass
+
+
+            # Clean up cache
             if stream_id in STREAMING_CACHE:
                 del STREAMING_CACHE[stream_id]
-            return
-        
-        # Save assistant message
-        if response_content:
-            try:
-                assistant_message_kwargs = {
-                    "thread_id": thread.id,
-                    "role": "assistant",
-                    "content": response_content,
-                    "created_at": datetime.utcnow(),
-                }
-                if has_branch_column:
-                    assistant_message_kwargs["branch_id"] = chat_request.branch_id
-                if has_parent_column:
-                    assistant_message_kwargs["parent_message_id"] = user_message.id
-                
-                with db.begin_nested():
-                    assistant_message = Message(**assistant_message_kwargs)
-                    db.add(assistant_message)
-                    thread.updated_at = datetime.utcnow()
-                    db.commit()
-                    db.refresh(assistant_message)
-            except Exception as db_error:
-                logger.error(f"Database save failed: {db_error}")
-                yield f"data: {json.dumps({'error': f'Database error: {str(db_error)}', 'stream_id': stream_id})}\n\n"
-        
-        yield f"data: {json.dumps({'done': True, 'thread_id': str(thread.id), 'total_chunks': len(STREAMING_CACHE[stream_id]), 'stream_id': stream_id})}\n\n"
-        
-        if stream_id in STREAMING_CACHE:
-            del STREAMING_CACHE[stream_id]
     
     if chat_request.stream:
         return StreamingResponse(
