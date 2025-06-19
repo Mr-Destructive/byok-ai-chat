@@ -126,11 +126,11 @@ export function Sidebar({ onThreadCreated }: SidebarProps) {
 
   const handleModelChange = (value: string) => {
     setSelectedModel(value);
-    localStorage.setItem('selectedModel', value);
+    localStorage.setItem("selectedModel", value);
   };
 
   const handleCollapse = () => {
-    setCollapsed(!collapsed);
+    setCollapsed(prev => !prev);
   };
 
   if (error) {
@@ -161,30 +161,46 @@ export function Sidebar({ onThreadCreated }: SidebarProps) {
     <TooltipProvider>
       <div
         className={`relative flex flex-col h-full transition-all duration-300 bg-sidebar/70 backdrop-blur-lg shadow-xl border-r border-sidebar-border ${collapsed ? "w-16" : "w-72"}`}
-        style={{ minWidth: collapsed ? '4rem' : '18rem' }}
       >
         {/* App Heading/Logo */}
-        <div className={`sticky top-0 z-30 flex flex-col bg-sidebar/80 ${collapsed ? 'items-center pt-4' : 'px-4 pt-4'} pb-2`}>
-          <div className="flex items-center w-full mb-4">
-            <span className="font-bold text-2xl tracking-tight text-sidebar-foreground drop-shadow-lg transition-all duration-300 flex-1">BYOK Chat</span>
+        <div className={`sticky top-0 z-30 flex flex-col bg-sidebar/80 ${collapsed ? 'items-center pt-4 px-2' : 'px-4 pt-4'} pb-6 relative`}>
+          {/* Header with collapse button on the same line */}
+          <div className={`flex items-center w-full mb-6 ${collapsed ? 'justify-center' : 'justify-between'}`}>
+            {!collapsed && (
+              <span className="font-bold text-2xl tracking-tight text-sidebar-foreground drop-shadow-lg transition-all duration-300">
+                BYOK Chat
+              </span>
+            )}
+            {collapsed && (
+              <span className="font-bold text-lg tracking-tight text-sidebar-foreground drop-shadow-lg transition-all duration-300">
+                BYOK
+              </span>
+            )}
+            
+            {/* Collapse/Expand button - now inline with header */}
             <Tooltip>
               <TooltipTrigger asChild>
-                <button
-                  className="ml-2 p-1 rounded-full hover:bg-sidebar-accent/60 transition-colors"
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-8 p-0 rounded-full hover:bg-sidebar-accent/60 transition-colors"
                   onClick={handleCollapse}
                   aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
                 >
                   {collapsed ? <ChevronRight size={22} /> : <ChevronLeft size={22} />}
-                </button>
+                </Button>
               </TooltipTrigger>
               <TooltipContent>{collapsed ? "Expand sidebar" : "Collapse sidebar"}</TooltipContent>
             </Tooltip>
           </div>
+
           {/* New Chat Button */}
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                className={`mb-2 flex items-center justify-center w-full rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 shadow transition-all ${collapsed ? 'w-10 h-10 p-0 justify-center mx-auto' : ''}`}
+                className={`mb-2 flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 shadow transition-all ${
+                  collapsed ? 'w-10 h-10 p-0' : 'w-full'
+                }`}
                 aria-label="New Chat"
                 title="New Chat"
                 onClick={handleNewChat}
@@ -195,12 +211,15 @@ export function Sidebar({ onThreadCreated }: SidebarProps) {
             </TooltipTrigger>
             {collapsed && <TooltipContent>New Chat</TooltipContent>}
           </Tooltip>
-          {/* API Key Button below New Chat, styled same as New Chat */}
+          
+          {/* API Key Button */}
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 onClick={handleApiKeys}
-                className={`mb-3 flex items-center justify-center w-full rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 shadow transition-all ${collapsed ? 'w-10 h-10 p-0 justify-center mx-auto' : ''}`}
+                className={`mb-3 flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 shadow transition-all ${
+                  collapsed ? 'w-10 h-10 p-0' : 'w-full'
+                }`}
                 aria-label="API Keys"
                 title="API Keys"
               >
@@ -211,6 +230,7 @@ export function Sidebar({ onThreadCreated }: SidebarProps) {
             {collapsed && <TooltipContent>API Keys</TooltipContent>}
           </Tooltip>
         </div>
+        
         {/* Main Content */}
         <div className={`flex flex-col flex-1 w-full transition-all duration-300 ${collapsed ? 'px-1' : 'px-4'}`}>
           {/* Settings */}
