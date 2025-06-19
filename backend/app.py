@@ -10,6 +10,7 @@ import jwt
 from jwt.exceptions import InvalidTokenError
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, AsyncGenerator
+import inspect
 from pydantic import BaseModel, EmailStr, validator
 from cryptography.fernet import Fernet
 import httpx
@@ -168,6 +169,17 @@ class ChatRequest(BaseModel):
     branch_id: Optional[str] = None
     resume_from_chunk: Optional[int] = None
     stream_id: Optional[str] = None
+
+async def _as_async_generator(sync_gen):
+    """
+    Wraps a synchronous generator to make it behave like an asynchronous generator.
+    """
+    for item in sync_gen:
+        yield item
+        # Add a small sleep if needed to ensure other async tasks can run,
+        # especially if the sync_gen is very fast and CPU-bound, though
+        # for I/O bound operations from litellm, this might not be strictly necessary.
+        # await asyncio.sleep(0) # Optional: uncomment if needed
 
 # Utility Functions
 def get_password_hash(password: str) -> str:
@@ -1089,8 +1101,19 @@ async def chat(
                 timeout=60
             )
 
+            # Ensure 'response' is an async generator if streaming is enabled
             if chat_request.stream:
-                async for chunk in response:
+                # Check if it's a regular generator and not an async generator
+                if inspect.isgenerator(response) and not inspect.isasyncgen(response):
+                    response = _as_async_generator(response)
+                # Optional: Add a log if it's already an async generator or neither
+                # elif inspect.isasyncgen(response):
+                #     logger.info("LiteLLM returned an async generator as expected.")
+                # else:
+                #     logger.warning(f"LiteLLM returned an unexpected type for streaming: {type(response)}")
+
+            if chat_request.stream:
+                async for chunk in response: # This line should now work correctly
                     content = ""
                     if hasattr(chunk, 'choices') and chunk.choices:
                         delta = chunk.choices[0].delta
