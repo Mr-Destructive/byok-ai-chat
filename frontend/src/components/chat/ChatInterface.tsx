@@ -9,7 +9,8 @@ import { MessageSquare, Send, Paperclip, X, RefreshCw } from "lucide-react"; // 
 import { cn } from "@/lib/utils";
 import { ChatMessage } from "./ChatMessage";
 import { useSidebar } from "../layout/Sidebar";
-import { toast } from "sonner"; // Already using sonner for toasts
+import { toast } from "sonner";
+import { Link } from "react-router-dom";
 
 interface ChatInterfaceProps {
   currentThreadId?: string;
@@ -155,24 +156,57 @@ export function ChatInterface({
       setIsComposing(false);
     },
     onError: (error: any) => {
-      let errorMessage = 'Failed to send message';
+      // Log the full error object for debugging purposes first
+      console.error("Chat send error object:", error);
+
+      let errorMessage: string | React.ReactNode = 'Failed to send message'; // Default error message
+      let toastTitle = 'Message Error'; // Default toast title
+      let toastOptions: { duration?: number } = {}; // Default toast options
+
       if (error.status === 422) {
         try {
+          // Attempt to parse a more specific error message if available
           errorMessage = error.message.includes('detail') 
             ? JSON.parse(error.message.match(/\| Response: (.+)/)?.[1] || '{}').detail
             : error.message;
         } catch {
-          errorMessage = error.message;
+          // Fallback to the original error message if parsing fails
+          errorMessage = error.message || 'Validation error';
         }
-      } else if (error.message.includes('INCOMPLETE_CHUNKED_ENCODING')) {
+      } else if (error.message && error.message.includes('INCOMPLETE_CHUNKED_ENCODING')) {
         errorMessage = 'Connection interrupted. Please try again.';
-      } else if (error.message.includes('No active API key found for provider')) {
-        errorMessage = error.message;
+      } else if (error.message && error.message.includes('No active API key found for provider')) {
+        // Handle specific "No active API key" error
+        let providerName = selectedProvider; // Prioritize provider from UI selection
+
+        if (!providerName) {
+          // Fallback to extracting provider name from the error message if not available from UI
+          const match = error.message.match(/No active API key found for provider: (.*)/);
+          if (match && match[1]) {
+            providerName = match[1];
+          } else {
+            providerName = 'the selected provider'; // Ultimate fallback
+          }
+        }
+
+        // Capitalize the first letter of the provider name for display
+        const displayProviderName = providerName.charAt(0).toUpperCase() + providerName.slice(1);
+
+        errorMessage = (
+          <>
+            No active API key for {displayProviderName}. Please add or activate your key on the{' '}
+            <Link to="/api-keys" className="underline hover:text-blue-400 transition-colors">API Keys page</Link>.
+          </>
+        );
+        toastTitle = 'API Key Missing'; // Specific title for this error
+        toastOptions.duration = 10000; // Longer duration for this guidance
       } else {
-        errorMessage = error.message || error.toString();
+        // Generic error handler
+        errorMessage = error.message || String(error) || 'An unknown error occurred.';
       }
-      console.error("Error sending message:", errorMessage);
-      toast({ title: 'Error', description: errorMessage });
+
+      // Display the toast notification with the determined title, message, and options
+      toast({ title: toastTitle, description: errorMessage, ...toastOptions });
     },
   });
 
