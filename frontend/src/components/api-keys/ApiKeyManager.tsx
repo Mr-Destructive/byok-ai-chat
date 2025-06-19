@@ -337,11 +337,6 @@ export function ApiKeyManager() {
               return acc;
             }, {} as Record<string, ApiKey[]>)
           ).map(([providerId, keys]) => (
-              acc[key.provider] = acc[key.provider] || [];
-              acc[key.provider].push(key);
-              return acc;
-            }, {} as Record<string, ApiKey[]>)
-          ).map(([providerId, keys]) => (
             <Card key={providerId} className="mb-4 bg-slate-800 border-slate-700 text-slate-100">
               <CardHeader className="flex flex-row items-center justify-between">
                 <div className="flex items-center gap-2">
