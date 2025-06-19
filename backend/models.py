@@ -44,6 +44,7 @@ class Message(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     parent_message_id = Column(UUID(as_uuid=True), nullable=True)
     branch_id = Column(UUID(as_uuid=True), nullable=True)
+    error_info = Column(Text, nullable=True) # New field
 
 class SharedLink(Base):
     __tablename__ = "shared_links"

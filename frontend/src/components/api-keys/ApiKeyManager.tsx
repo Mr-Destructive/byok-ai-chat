@@ -4,6 +4,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  DialogClose,
+} from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Plus, Key, Eye, EyeOff, Trash2, Check, AlertCircle } from "lucide-react";
@@ -201,117 +211,123 @@ export function ApiKeyManager() {
         <div className="p-6 border-b border-slate-700/50 bg-slate-900/30 backdrop-blur-sm">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-xl font-semibold text-white">API Key Management</h2>
+              <h2 className="text-xl font-semibold text-slate-100">API Key Management</h2>
               <p className="text-slate-400 mt-1">Securely manage your AI provider API keys</p>
             </div>
-            <Button
-              onClick={() => setShowModal(true)}
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              <Plus className="mr-2 h-4 w-4" /> Add API Key
-            </Button>
-          </div>
-        </div>
-
-        {showModal && (
-          <Card className="bg-slate-800 border-slate-700">
-            <CardHeader>
-              <CardTitle className="text-white">Add New API Key</CardTitle>
-              <CardDescription className="text-slate-400">Enter your API key details below.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div>
-                  <Label htmlFor="provider" className="text-slate-300">Provider</Label>
-                  <select
-                    id="provider"
-                    value={selectedProvider}
-                    onChange={(e) => handleProviderChange(e.target.value)}
-                    className="w-full mt-1 bg-slate-700 border-slate-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Select a provider...</option>
-                    {providers.map((provider) => (
-                      <option key={provider.id} value={provider.id}>
-                        {provider.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {selectedProvider && (
-                  <div>
-                    <Label htmlFor="model" className="text-slate-300">Model</Label>
+            <Dialog open={showModal} onOpenChange={setShowModal}>
+              <DialogTrigger asChild>
+                <Button className="bg-blue-600 hover:bg-blue-700 text-white">
+                  <Plus className="mr-2 h-4 w-4" /> Add API Key
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="bg-slate-800 border-slate-700 text-slate-100 sm:max-w-[480px]">
+                <DialogHeader>
+                  <DialogTitle>Add New API Key</DialogTitle>
+                  <DialogDescription className="text-slate-400">
+                    Enter your API key details below. Ensure you select the correct provider and model.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 py-4">
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="provider" className="text-right text-slate-300">
+                      Provider
+                    </Label>
                     <select
-                      id="model"
-                      value={selectedModel}
-                      onChange={(e) => setSelectedModel(e.target.value)}
-                      className="w-full mt-1 bg-slate-700 border-slate-600 text-white rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                      id="provider"
+                      value={selectedProvider}
+                      onChange={(e) => handleProviderChange(e.target.value)}
+                      className="col-span-3 bg-slate-700 border-slate-600 text-slate-100 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
                     >
-                      <option value="">Select a model...</option>
-                      {(modelsByProvider[selectedProvider] || []).map((model) => (
-                        <option key={model} value={model}>
-                          {model}
+                      <option value="">Select a provider...</option>
+                      {providers.map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.name}
                         </option>
                       ))}
                     </select>
-                    {(modelsByProvider[selectedProvider] || []).length === 0 && (
-                      <p className="text-xs text-amber-400 mt-1">No models available for this provider</p>
-                    )}
                   </div>
-                )}
 
-                <div>
-                  <Label htmlFor="keyName" className="text-slate-300">Key Name</Label>
-                  <Input
-                    id="keyName"
-                    value={keyName}
-                    onChange={(e) => setKeyName(e.target.value)}
-                    placeholder="e.g., Main API Key"
-                    className="mt-1 bg-slate-700 border-slate-600 text-white focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
+                  {selectedProvider && (
+                    <div className="grid grid-cols-4 items-center gap-4">
+                      <Label htmlFor="model" className="text-right text-slate-300">
+                        Model
+                      </Label>
+                      <select
+                        id="model"
+                        value={selectedModel}
+                        onChange={(e) => setSelectedModel(e.target.value)}
+                        className="col-span-3 bg-slate-700 border-slate-600 text-slate-100 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">Select a model...</option>
+                        {(modelsByProvider[selectedProvider] || []).map((model) => (
+                          <option key={model} value={model}>
+                            {model}
+                          </option>
+                        ))}
+                      </select>
+                      {(modelsByProvider[selectedProvider] || []).length === 0 && (
+                        <p className="col-span-4 text-xs text-amber-400 mt-1 text-center">No models available for this provider</p>
+                      )}
+                    </div>
+                  )}
 
-                <div>
-                  <Label htmlFor="apiKey" className="text-slate-300">API Key</Label>
-                  <div className="relative">
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="keyName" className="text-right text-slate-300">
+                      Key Name
+                    </Label>
                     <Input
-                      id="apiKey"
-                      type={showApiKey ? "text" : "password"}
-                      value={apiKey}
-                      onChange={(e) => setApiKey(e.target.value)}
-                      placeholder="Paste your API key here"
-                      className="mt-1 bg-slate-700 border-slate-600 text-white focus:ring-2 focus:ring-blue-500 pr-10"
+                      id="keyName"
+                      value={keyName}
+                      onChange={(e) => setKeyName(e.target.value)}
+                      placeholder="e.g., My OpenAI Key"
+                      className="col-span-3 bg-slate-700 border-slate-600 text-slate-100 focus:ring-2 focus:ring-blue-500"
                     />
-                    <button
-                      type="button"
-                      onClick={() => setShowApiKey(!showApiKey)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
-                    >
-                      {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="apiKey" className="text-right text-slate-300">
+                      API Key
+                    </Label>
+                    <div className="col-span-3 relative">
+                      <Input
+                        id="apiKey"
+                        type={showApiKey ? "text" : "password"}
+                        value={apiKey}
+                        onChange={(e) => setApiKey(e.target.value)}
+                        placeholder="Paste your API key here"
+                        className="bg-slate-700 border-slate-600 text-slate-100 focus:ring-2 focus:ring-blue-500 pr-10"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowApiKey(!showApiKey)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                        aria-label={showApiKey ? "Hide API key" : "Show API key"}
+                      >
+                        {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
                   </div>
                 </div>
-
-                <div className="flex gap-3 justify-end">
+                <DialogFooter>
+                  <DialogClose asChild>
+                    <Button variant="outline" className="border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-slate-100">
+                      Cancel
+                    </Button>
+                  </DialogClose>
                   <Button
-                    className="bg-blue-600 hover:bg-blue-700 text-white"
                     onClick={handleAddKey}
                     disabled={submitting || !selectedProvider || !selectedModel || !keyName || !apiKey}
+                    className="bg-blue-600 hover:bg-blue-700 text-white"
                   >
                     {submitting ? 'Adding...' : 'Add API Key'}
                   </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => setShowModal(false)}
-                    className="border-slate-600 text-slate-300 hover:bg-slate-700"
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
+        </div>
+
+        {/* The old Card-based modal structure is removed. */}
 
         <ScrollArea className="flex-1">
           {Object.entries(
@@ -321,11 +337,16 @@ export function ApiKeyManager() {
               return acc;
             }, {} as Record<string, ApiKey[]>)
           ).map(([providerId, keys]) => (
-            <Card key={providerId} className="mb-4 bg-slate-800 border-slate-700">
+              acc[key.provider] = acc[key.provider] || [];
+              acc[key.provider].push(key);
+              return acc;
+            }, {} as Record<string, ApiKey[]>)
+          ).map(([providerId, keys]) => (
+            <Card key={providerId} className="mb-4 bg-slate-800 border-slate-700 text-slate-100">
               <CardHeader className="flex flex-row items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Key className="h-5 w-5 text-slate-300" />
-                  <CardTitle className="text-white">{getProviderDisplayName(providerId)}</CardTitle>
+                  <CardTitle className="text-slate-100">{getProviderDisplayName(providerId)}</CardTitle>
                 </div>
                 <Badge className={`${getProviderColor(providerId)} text-white`}>
                   {keys.length} {keys.length === 1 ? 'key' : 'keys'}
@@ -338,10 +359,10 @@ export function ApiKeyManager() {
                     .map((key) => (
                       <div
                         key={key.id}
-                        className="flex items-center justify-between p-3 bg-slate-700/50 rounded-lg"
+                        className="flex items-center justify-between p-3 bg-slate-700 rounded-lg" // Solid bg-slate-700
                       >
                         <div>
-                          <p className="text-sm font-medium text-white">{key.key_name}</p>
+                          <p className="text-sm font-medium text-slate-100">{key.key_name}</p>
                           <p className="text-xs text-slate-400">Model: {key.model_name}</p>
                           <p className="text-xs text-slate-400">
                             Added: {new Date(key.created_at).toLocaleDateString()}
@@ -350,7 +371,7 @@ export function ApiKeyManager() {
                         <div className="flex items-center gap-2">
                           <Badge
                             variant={key.is_active ? 'default' : 'secondary'}
-                            className={key.is_active ? 'bg-green-600' : 'bg-slate-600'}
+                            className={key.is_active ? 'bg-green-600 text-white' : 'bg-slate-600 text-slate-200'}
                           >
                             {key.is_active ? <Check className="h-4 w-4 mr-1" /> : <AlertCircle className="h-4 w-4 mr-1" />}
                             {key.is_active ? 'Active' : 'Inactive'}
