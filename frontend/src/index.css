@@ -102,3 +102,46 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Markdown Global Styles */
+
+/* Code blocks */
+pre > div {
+  padding: 1rem;
+  border-radius: 0.5rem; /* Tailwind's `rounded-lg` */
+  overflow-x: auto;
+  font-family: 'monospace'; /* Ensure a monospace font */
+  font-size: 0.875rem; /* Tailwind's `text-sm` */
+}
+
+/* Inline code */
+code:not(pre > code) {
+  background-color: #374151; /* Tailwind's `bg-gray-700` */
+  color: #e5e7eb; /* Tailwind's `text-gray-200` */
+  padding: 0.2rem 0.4rem;
+  border-radius: 0.25rem; /* Tailwind's `rounded-sm` */
+  font-size: 0.85em; /* Slightly smaller than surrounding text */
+  font-family: 'monospace';
+}
+
+/* Blockquotes */
+blockquote {
+  border-left: 4px solid #4b5563; /* Tailwind's `border-gray-600` */
+  padding-left: 1rem;
+  margin-left: 0;
+  font-style: italic;
+  color: #d1d5db; /* Tailwind's `text-gray-300` */
+}
+
+/* Lists */
+ul, ol {
+  margin-left: 1.5rem;
+  list-style-position: outside;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 600; /* Tailwind's `font-semibold` */
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+}
