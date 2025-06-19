@@ -1,4 +1,3 @@
-
 import React, { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -55,7 +54,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               className="w-full h-auto rounded-md"
             />
             {metadata?.filename && (
-              <p className="text-sm text-slate-400 mt-1">
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
                 {metadata.filename}
               </p>
             )}
@@ -64,10 +63,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
       case "search":
         return (
           <div>
-            <p className="font-semibold">Web Search Results:</p>
-            <p>{content}</p>
+            <p className="font-semibold text-gray-900 dark:text-white">Web Search Results:</p>
+            <p className="text-gray-900 dark:text-white">{content}</p>
             {metadata?.sources && (
-              <ul className="list-disc pl-4 text-sm text-slate-400">
+              <ul className="list-disc pl-4 text-sm text-gray-600 dark:text-gray-400">
                 {metadata.sources.map((source: string, index: number) => (
                   <li key={index}>{source}</li>
                 ))}
@@ -78,10 +77,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
       case "research":
         return (
           <div>
-            <p className="font-semibold">Deep Research Analysis:</p>
-            <p>{content}</p>
+            <p className="font-semibold text-gray-900 dark:text-white">Deep Research Analysis:</p>
+            <p className="text-gray-900 dark:text-white">{content}</p>
             {metadata?.references && (
-              <ul className="list-disc pl-4 text-sm text-slate-400">
+              <ul className="list-disc pl-4 text-sm text-gray-600 dark:text-gray-400">
                 {metadata.references.map((ref: string, index: number) => (
                   <li key={index}>{ref}</li>
                 ))}
@@ -116,9 +115,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                     <button
                       onClick={handleCopy}
                       className={cn(
-                        "absolute top-2 right-2 p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700",
+                        "absolute top-2 right-2 p-1.5 rounded-md text-gray-400 dark:text-gray-300 hover:text-gray-200 dark:hover:text-white hover:bg-gray-600 dark:hover:bg-gray-700",
                         "opacity-0 group-hover:opacity-100 transition-opacity",
-                        isCopied && "bg-green-600 text-white hover:bg-green-700"
+                        isCopied && "bg-green-600 dark:bg-green-500 text-white hover:bg-green-700 dark:hover:bg-green-600"
                       )}
                       aria-label={isCopied ? "Copied!" : "Copy code"}
                     >
@@ -141,7 +140,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                   <code
                     className={cn(
                       className,
-                      "bg-slate-600 px-1 py-0.5 rounded-sm"
+                      "bg-gray-600 dark:bg-gray-700 px-1 py-0.5 rounded-sm text-white"
                     )}
                     {...props}
                   >
@@ -158,14 +157,14 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   };
 
   const AvatarComponent = isUser ? User2 : Bot;
-  const avatarColor = isUser ? "text-blue-300" : "text-purple-300";
+  const avatarColor = isUser ? "text-blue-600 dark:text-blue-400" : "text-purple-600 dark:text-purple-400";
 
   if (isSystem) {
     return (
       <div className="flex w-full justify-center group/message">
-        <div className="max-w-[70%] p-3 rounded-lg bg-slate-700 text-white text-sm">
+        <div className="max-w-[70%] p-3 rounded-lg bg-gray-600 dark:bg-gray-800 text-gray-900 dark:text-white text-sm">
           {renderContent()}
-          <p className="text-xs text-slate-300 mt-1 pt-1">
+          <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 pt-1">
             {format(new Date(timestamp), "PPP p")}
           </p>
         </div>
@@ -178,11 +177,11 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
       className={cn(
         "relative max-w-[85%] p-3 rounded-lg shadow-md group/actions",
         isUser
-          ? "bg-blue-600 text-white rounded-br-none"
-          : "bg-gray-700 text-white rounded-bl-none"
+          ? "bg-blue-600 dark:bg-blue-500 text-white dark:text-white rounded-br-none"
+          : "bg-gray-200 dark:bg-gray-800 text-gray-900 dark:text-white rounded-bl-none"
       )}
     >
-      <div className="prose prose-sm prose-invert max-w-none message-content">
+      <div className="prose prose-sm max-w-none message-content">
         {renderContent()}
       </div>
 
@@ -191,7 +190,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
         {isAssistant && onRetryMessage && (
           <button
             onClick={() => onRetryMessage(id)}
-            className="p-1 rounded-md text-slate-200 hover:text-white hover:bg-slate-600/70"
+            className="p-1 rounded-md text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-300 dark:hover:bg-gray-600"
             aria-label="Retry message"
             title="Retry message"
           >
@@ -201,8 +200,8 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
         <button
           onClick={handleCopyMessage}
           className={cn(
-            "p-1 rounded-md text-slate-200 hover:text-white hover:bg-slate-600/70",
-            isMessageCopied && "bg-green-500 hover:bg-green-600"
+            "p-1 rounded-md text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-300 dark:hover:bg-gray-600",
+            isMessageCopied && "bg-green-500 dark:bg-green-600 hover:bg-green-600 dark:hover:bg-green-700"
           )}
           aria-label={isMessageCopied ? "Message Copied!" : "Copy message"}
           title={isMessageCopied ? "Message Copied!" : "Copy message"}
@@ -213,7 +212,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             <Copy size={14} />
           )}
         </button>
-        <p className="text-xs text-slate-300 ml-1">
+        <p className="text-xs text-gray-500 dark:text-gray-400 ml-1">
           {format(new Date(timestamp), "p")}
         </p>
       </div>
@@ -228,13 +227,13 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
       )}
     >
       {!isUser && (
-        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-slate-600 flex items-center justify-center mt-1">
+        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-300 dark:bg-gray-600 flex items-center justify-center mt-1">
           <AvatarComponent size={18} className={avatarColor} />
         </div>
       )}
       {messageBubble}
       {isUser && (
-        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-slate-600 flex items-center justify-center mt-1">
+        <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-300 dark:bg-gray-600 flex items-center justify-center mt-1">
           <AvatarComponent size={18} className={avatarColor} />
         </div>
       )}
