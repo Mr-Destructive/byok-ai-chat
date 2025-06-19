@@ -5,11 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
-import { MessageSquare, Send, Paperclip, X } from "lucide-react";
+import { MessageSquare, Send, Paperclip, X, RefreshCw } from "lucide-react"; // Added RefreshCw just in case, though not strictly needed here
 import { cn } from "@/lib/utils";
 import { ChatMessage } from "./ChatMessage";
 import { useSidebar } from "../layout/Sidebar";
-import { toast } from "sonner";
+import { toast } from "sonner"; // Already using sonner for toasts
 
 interface ChatInterfaceProps {
   currentThreadId?: string;
@@ -261,6 +261,51 @@ const fileUploadMutation = useMutation({
 
   const isLoading = sendMessageMutation.isPending || fileUploadMutation.isPending;
 
+  const handleRetryMessage = async (messageIdToRetry: string) => {
+    if (!messages) {
+      toast.error("Cannot retry: Message list not loaded.");
+      return;
+    }
+
+    const messageToRetryIndex = messages.findIndex(msg => msg.id === messageIdToRetry);
+
+    if (messageToRetryIndex === -1) {
+      toast.error("Cannot retry: Original message not found.");
+      return;
+    }
+
+    if (messages[messageToRetryIndex].role !== 'assistant') {
+      toast.error("Cannot retry: Only assistant messages can be retried.");
+      return;
+    }
+
+    // Find the last user message *before* the assistant message to be retried
+    let lastUserMessageContent: string | null = null;
+    for (let i = messageToRetryIndex - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        lastUserMessageContent = messages[i].content;
+        break;
+      }
+    }
+
+    if (!lastUserMessageContent) {
+      toast.error("Cannot retry: No preceding user message found to use as context.");
+      return;
+    }
+
+    // Optional: Remove the failed assistant message and any subsequent messages
+    // For now, we will just send the request and let the new response appear.
+    // If you want to remove the old message, you'd need to update the local cache or refetch carefully.
+    // Example: queryClient.setQueryData(['messages', currentThreadId], (oldData: Message[] | undefined) => oldData ? oldData.slice(0, messageToRetryIndex) : []);
+
+
+    toast.info("Retrying message...");
+    sendMessageMutation.mutate({
+      message: lastUserMessageContent, // Send the content of the *preceding user message*
+      threadId: currentThreadId,
+      // Potentially add a flag here if your backend needs to know it's a retry
+    });
+  };
 
   useEffect(() => {
     try {
@@ -298,14 +343,17 @@ const fileUploadMutation = useMutation({
             messages?.map((msg: Message) => (
               <ChatMessage
                 key={msg.id}
+                id={msg.id} // Pass the id
                 role={msg.role}
                 content={msg.content}
                 timestamp={msg.created_at}
-                type="text"
+                type="text" // Assuming text for now, this might need to be dynamic later
+                onRetryMessage={msg.role === 'assistant' ? handleRetryMessage : undefined}
+                // isLoadingRetry={retryingMessageId === msg.id && sendMessageMutation.isPending} // If using specific loading state
               />
             ))
           )}
-          {isLoading && (
+          {isLoading && !messages?.find(m => m.role === 'assistant' && m.content === "") && ( // Avoid showing global loading if it's a retry of an existing message
             <div className="flex justify-start">
               <div className="bg-card rounded-2xl px-4 py-3 max-w-[80%] shadow-sm">
                 <div className="flex space-x-2">
