@@ -24,6 +24,8 @@ interface SidebarContextType {
   selectedModel: string;
   setSelectedProvider: (provider: string) => void;
   setSelectedModel: (model: string) => void;
+  collapsed: boolean;
+  setCollapsed: (collapsed: boolean) => void;
 }
 
 const SidebarContext = createContext<SidebarContextType | undefined>(undefined);
@@ -34,7 +36,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
-    <SidebarContext.Provider value={{ selectedProvider, setSelectedProvider, selectedModel, setSelectedModel }}>
+    <SidebarContext.Provider value={{ selectedProvider, setSelectedProvider, selectedModel, setSelectedModel, collapsed, setCollapsed }}>
       {children}
     </SidebarContext.Provider>
   );
@@ -53,13 +55,12 @@ interface SidebarProps {
 }
 
 export function Sidebar({ onThreadCreated }: SidebarProps) {
-  const { selectedProvider, setSelectedProvider, selectedModel, setSelectedModel } = useSidebar();
+  const { selectedProvider, setSelectedProvider, selectedModel, setSelectedModel, collapsed, setCollapsed } = useSidebar();
   const { data, isLoading, error } = useQuery({
     queryKey: ["providers-and-models"],
     queryFn: chatApi.getProvidersAndModels,
   });
   const { currentUser, handleLogout } = useAppContext();
-  const [localCollapsed, setLocalCollapsed] = useState(false);
 
   // Chat threads state
   const { data: threads = [], isLoading: isThreadsLoading } = useQuery({
@@ -93,7 +94,6 @@ export function Sidebar({ onThreadCreated }: SidebarProps) {
         window.dispatchEvent(new Event('focus'));
       }
     } catch (err) {
-      // TODO: Add toast or error handling
       console.error('Failed to create new chat thread', err);
     }
   };
@@ -101,7 +101,6 @@ export function Sidebar({ onThreadCreated }: SidebarProps) {
   const handleApiKeys = () => {
     navigate('/api-keys');
   };
-
 
   useEffect(() => {
     if (data && !selectedProvider && !selectedModel && data.providers?.length > 0) {
@@ -130,9 +129,8 @@ export function Sidebar({ onThreadCreated }: SidebarProps) {
     localStorage.setItem('selectedModel', value);
   };
 
-
   const handleCollapse = () => {
-    setLocalCollapsed(!localCollapsed);
+    setCollapsed(!collapsed);
   };
 
   if (error) {
@@ -162,11 +160,11 @@ export function Sidebar({ onThreadCreated }: SidebarProps) {
   return (
     <TooltipProvider>
       <div
-        className={`relative flex flex-col h-full transition-all duration-300 bg-sidebar/70 backdrop-blur-lg shadow-xl border-r border-sidebar-border ${localCollapsed ? "w-16" : "w-72"}`}
-        style={{ minWidth: localCollapsed ? '4rem' : '18rem' }}
+        className={`relative flex flex-col h-full transition-all duration-300 bg-sidebar/70 backdrop-blur-lg shadow-xl border-r border-sidebar-border ${collapsed ? "w-16" : "w-72"}`}
+        style={{ minWidth: collapsed ? '4rem' : '18rem' }}
       >
         {/* App Heading/Logo */}
-        <div className={`sticky top-0 z-30 flex flex-col bg-sidebar/80 ${localCollapsed ? 'items-center pt-4' : 'px-4 pt-4'} pb-2`}>
+        <div className={`sticky top-0 z-30 flex flex-col bg-sidebar/80 ${collapsed ? 'items-center pt-4' : 'px-4 pt-4'} pb-2`}>
           <div className="flex items-center w-full mb-4">
             <span className="font-bold text-2xl tracking-tight text-sidebar-foreground drop-shadow-lg transition-all duration-300 flex-1">BYOK Chat</span>
             <Tooltip>
@@ -174,49 +172,49 @@ export function Sidebar({ onThreadCreated }: SidebarProps) {
                 <button
                   className="ml-2 p-1 rounded-full hover:bg-sidebar-accent/60 transition-colors"
                   onClick={handleCollapse}
-                  aria-label={localCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                  aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
                 >
-                  {localCollapsed ? <ChevronRight size={22} /> : <ChevronLeft size={22} />}
+                  {collapsed ? <ChevronRight size={22} /> : <ChevronLeft size={22} />}
                 </button>
               </TooltipTrigger>
-              <TooltipContent>{localCollapsed ? "Expand sidebar" : "Collapse sidebar"}</TooltipContent>
+              <TooltipContent>{collapsed ? "Expand sidebar" : "Collapse sidebar"}</TooltipContent>
             </Tooltip>
           </div>
           {/* New Chat Button */}
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                className={`mb-2 flex items-center justify-center w-full rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 shadow transition-all ${localCollapsed ? 'w-10 h-10 p-0 justify-center mx-auto' : ''}`}
+                className={`mb-2 flex items-center justify-center w-full rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 shadow transition-all ${collapsed ? 'w-10 h-10 p-0 justify-center mx-auto' : ''}`}
                 aria-label="New Chat"
                 title="New Chat"
                 onClick={handleNewChat}
               >
                 <MessageSquare className="w-5 h-5" />
-                {!localCollapsed && <span className="ml-2">New Chat</span>}
+                {!collapsed && <span className="ml-2">New Chat</span>}
               </button>
             </TooltipTrigger>
-            {localCollapsed && <TooltipContent>New Chat</TooltipContent>}
+            {collapsed && <TooltipContent>New Chat</TooltipContent>}
           </Tooltip>
           {/* API Key Button below New Chat, styled same as New Chat */}
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 onClick={handleApiKeys}
-                className={`mb-3 flex items-center justify-center w-full rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 shadow transition-all ${localCollapsed ? 'w-10 h-10 p-0 justify-center mx-auto' : ''}`}
+                className={`mb-3 flex items-center justify-center w-full rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 shadow transition-all ${collapsed ? 'w-10 h-10 p-0 justify-center mx-auto' : ''}`}
                 aria-label="API Keys"
                 title="API Keys"
               >
                 <Key className="w-5 h-5" />
-                {!localCollapsed && <span className="ml-2">API Keys</span>}
+                {!collapsed && <span className="ml-2">API Keys</span>}
               </button>
             </TooltipTrigger>
-            {localCollapsed && <TooltipContent>API Keys</TooltipContent>}
+            {collapsed && <TooltipContent>API Keys</TooltipContent>}
           </Tooltip>
         </div>
         {/* Main Content */}
-        <div className={`flex flex-col flex-1 w-full transition-all duration-300 ${localCollapsed ? 'px-1' : 'px-4'}`}>
+        <div className={`flex flex-col flex-1 w-full transition-all duration-300 ${collapsed ? 'px-1' : 'px-4'}`}>
           {/* Settings */}
-          {!localCollapsed && (
+          {!collapsed && (
             <div className="flex flex-col gap-4">
               <h2 className="text-lg font-semibold text-sidebar-foreground mb-2">Settings</h2>
               <div className="mb-1">
@@ -258,14 +256,14 @@ export function Sidebar({ onThreadCreated }: SidebarProps) {
             </div>
           )}
           {/* Chat history only when expanded */}
-          {!localCollapsed && (
+          {!collapsed && (
             <div className="flex-1 min-h-0 overflow-y-auto mt-2 mb-2">
               <ChatHistorySidebar threads={threads} isThreadsLoading={isThreadsLoading} selectedThread={selectedThread} handleThreadSelect={handleThreadSelect} />
             </div>
           )}
         </div>
         {/* User Info & Logout at bottom */}
-        {!localCollapsed && currentUser && (
+        {!collapsed && currentUser && (
           <div className="sticky bottom-0 left-0 w-full bg-sidebar/90 border-t border-sidebar-border px-4 py-3 flex flex-col gap-2 z-20">
             <div className="flex items-center gap-3">
               <Avatar className="w-9 h-9">
@@ -285,7 +283,6 @@ export function Sidebar({ onThreadCreated }: SidebarProps) {
             </Button>
           </div>
         )}
-
       </div>
     </TooltipProvider>
   );

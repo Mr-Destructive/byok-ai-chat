@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
-import { MessageSquare, Send, Paperclip, X, RefreshCw } from "lucide-react";
+import { MessageSquare, Send, Paperclip, X, RefreshCw, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ChatMessage } from "./ChatMessage";
 import { useSidebar } from "../layout/Sidebar";
@@ -30,9 +30,9 @@ interface ApiKey {
   provider: string;
   key_name: string;
   is_active: boolean;
-  api_key?: string; // Optional to match backend response
-  model_name?: string; // Optional, included from backend
-  created_at?: string; // Optional, included from backend
+  api_key?: string;
+  model_name?: string;
+  created_at?: string;
 }
 
 export function ChatInterface({
@@ -96,7 +96,7 @@ export function ChatInterface({
         duration: 10000,
       });
     },
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    staleTime: 5 * 60 * 1000,
   });
 
   // Update selectedApiKeyId when availableApiKeys changes
@@ -323,7 +323,7 @@ export function ChatInterface({
     if (scrollAreaRef.current) {
       scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight;
     }
-  }, []);
+  }, [messages]);
 
   const isLoading = sendMessageMutation.isPending || fileUploadMutation.isPending;
 
@@ -359,10 +359,18 @@ export function ChatInterface({
     });
   };
 
+  const handleCopyMessage = (content: string) => {
+    navigator.clipboard.writeText(content).then(() => {
+      toast.success("Message copied to clipboard!");
+    }).catch(() => {
+      toast.error("Failed to copy message.");
+    });
+  };
+
   return (
-    <div className="flex-1 flex flex-col h-full bg-background text-foreground">
+    <div className="flex-1 flex flex-col h-full bg-gray-900 text-white">
       <ScrollArea className="flex-1 px-6 py-8" ref={scrollAreaRef}>
-        <div className="max-w-3xl mx-auto space-y-4">
+        <div className="max-w-3xl mx-auto space-y-6">
           {messagesLoading ? (
             <div className="flex items-center justify-center py-12">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
@@ -371,7 +379,7 @@ export function ChatInterface({
             <div className="text-center py-16">
               <MessageSquare className="w-16 h-16 text-gray-500 mx-auto mb-4" />
               <h2 className="text-xl font-semibold text-gray-300">Start a Conversation</h2>
-              <p className="text-muted-foreground mt-2">
+              <p className="text-gray-400 mt-2">
                 Type a message below to chat with <span className="text-blue-400">{selectedModel}</span> via{" "}
                 <span className="text-blue-400">{selectedProvider}</span>
               </p>
@@ -386,12 +394,13 @@ export function ChatInterface({
                 timestamp={msg.created_at}
                 type="text"
                 onRetryMessage={msg.role === 'assistant' ? handleRetryMessage : undefined}
+                onCopyMessage={handleCopyMessage}
               />
             ))
           )}
           {isLoading && !messages?.find((m: Message) => m.role === 'assistant' && m.content === "") && (
             <div className="flex justify-start">
-              <div className="bg-card rounded-2xl px-4 py-3 max-w-[80%] shadow-sm">
+              <div className="bg-gray-800 rounded-2xl px-4 py-3 max-w-[80%] shadow-sm">
                 <div className="flex space-x-2">
                   <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce"></div>
                   <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: "0.1s" }}></div>
@@ -402,15 +411,15 @@ export function ChatInterface({
           )}
         </div>
       </ScrollArea>
-      <div className="border-t border-border bg-card/95 backdrop-blur-sm shadow-lg dark:bg-gray-900/95">
+      <div className="border-t border-gray-800 bg-gray-900/95 backdrop-blur-sm shadow-lg">
         <div className="max-w-3xl mx-auto p-6">
           {apiKeysLoading && (
-            <div className="mb-4 p-3 bg-yellow-100 text-yellow-800 rounded-lg">
+            <div className="mb-4 p-3 bg-yellow-600/20 text-yellow-300 rounded-lg">
               Loading API keys...
             </div>
           )}
           {apiKeysError && (
-            <div className="mb-4 p-3 bg-red-100 text-red-800 rounded-lg">
+            <div className="mb-4 p-3 bg-red-600/20 text-red-300 rounded-lg">
               Failed to load API keys: {apiKeysErrorObj?.message || "Unknown error"}.{' '}
               <Button
                 variant="link"
@@ -422,16 +431,16 @@ export function ChatInterface({
             </div>
           )}
           {availableApiKeys.length === 0 && !apiKeysLoading && !apiKeysError && (
-            <div className="mb-4 p-3 bg-yellow-100 text-yellow-800 rounded-lg">
+            <div className="mb-4 p-3 bg-yellow-600/20 text-yellow-300 rounded-lg">
               No active API key for {selectedProvider || "the selected provider"}. Please add one in the{' '}
               <Link to="/api-keys" className="underline">API Keys page</Link>.
             </div>
           )}
           {availableApiKeys.length > 1 && (
             <div className="mb-4">
-              <label className="block text-xs font-semibold text-muted-foreground mb-1">Select API Key for this chat</label>
+              <label className="block text-xs font-semibold text-gray-400 mb-1">Select API Key for this chat</label>
               <select
-                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground focus:ring-2 focus:ring-blue-500"
+                className="w-full rounded-lg border border-gray-700 bg-gray-800 text-white px-3 py-2 focus:ring-2 focus:ring-blue-500"
                 value={selectedApiKeyId || ""}
                 onChange={(e) => setSelectedApiKeyId(e.target.value)}
               >
@@ -442,11 +451,11 @@ export function ChatInterface({
             </div>
           )}
           {file && (
-            <div className="mb-4 p-3 bg-card rounded-xl border border-gray-700 dark:border-gray-600 flex items-center justify-between">
+            <div className="mb-4 p-3 bg-gray-800 rounded-xl border border-gray-700 flex items-center justify-between">
               <div className="flex items-center space-x-3">
-                <Paperclip className="w-5 h-5 text-muted-foreground" />
-                <span className="text-sm font-medium text-gray-200 dark:text-gray-400">{file.name}</span>
-                <span className="text-xs text-gray-500 dark:text-gray-400">({(file.size / 1024 / 1024).toFixed(1)} MB)</span>
+                <Paperclip className="w-5 h-5 text-gray-400" />
+                <span className="text-sm font-medium text-gray-200">{file.name}</span>
+                <span className="text-xs text-gray-500">({(file.size / 1024 / 1024).toFixed(1)} MB)</span>
               </div>
               <Button
                 variant="ghost"
@@ -458,12 +467,12 @@ export function ChatInterface({
               </Button>
             </div>
           )}
-          <div className="flex items-center justify-between">
+          <div className="flex items-end gap-3">
             <Button
               variant="ghost"
               size="sm"
               onClick={() => fileInputRef.current?.click()}
-              className="h-8 w-8 p-0 hover:bg-gray-700 transition-colors duration-200"
+              className="h-12 w-12 p-0 hover:bg-gray-800 text-gray-400 hover:text-white transition-colors duration-200 rounded-xl"
             >
               <Paperclip className="w-5 h-5" />
             </Button>
@@ -477,7 +486,7 @@ export function ChatInterface({
                 }}
                 onKeyDown={handleKeyDown}
                 placeholder="Type your message... (Shift+Enter for new line)"
-                className="min-h-[48px] max-h-[120px] resize-none bg-card border-gray-700 text-foreground placeholder-gray-400 focus:border-blue-500 focus:ring-blue-500/30 rounded-xl pr-12 py-3 text-sm font-medium transition-all duration-200"
+                className="min-h-[48px] max-h-[120px] resize-none bg-gray-800 border-gray-700 text-white placeholder-gray-400 focus:border-blue-500 focus:ring-blue-500/30 rounded-xl pr-12 py-3 text-sm font-medium transition-all duration-200"
                 disabled={isLoading || apiKeysLoading || apiKeysError}
               />
             </div>
@@ -490,7 +499,7 @@ export function ChatInterface({
             </Button>
           </div>
           <div className="mt-3 flex items-center justify-center">
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-gray-400">
               Using <span className="text-blue-400">{selectedModel}</span> via{" "}
               <span className="text-blue-400">{selectedProvider}</span>
             </p>

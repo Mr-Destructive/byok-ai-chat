@@ -4,19 +4,18 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { Copy, RefreshCw, User2, Bot } from "lucide-react"; // Added User2 and Bot
+import { Copy, RefreshCw, User2, Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
 
 interface ChatMessageProps {
-  id: string; // Added id
+  id: string;
   role: string;
   content: string;
   timestamp: string;
-  type?: 'text' | 'image' | 'search' | 'research';
+  type?: "text" | "image" | "search" | "research";
   metadata?: any;
-  onRetryMessage?: (messageId: string) => void; // Added onRetryMessage
-  // isLoadingRetry?: boolean; // Optional: for specific loading state for this message's retry
+  onRetryMessage?: (messageId: string) => void;
 }
 
 export const ChatMessage: React.FC<ChatMessageProps> = ({
@@ -24,10 +23,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   role,
   content,
   timestamp,
-  type = 'text',
+  type = "text",
   metadata,
   onRetryMessage,
-  // isLoadingRetry
 }) => {
   const isUser = role === "user";
   const isAssistant = role === "assistant";
@@ -35,8 +33,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   const [isMessageCopied, setIsMessageCopied] = useState(false);
 
   const handleCopyMessage = () => {
-    // For now, we copy the raw 'content' string.
-    // Enhancements could involve serializing metadata for other types if needed.
     navigator.clipboard.writeText(content).then(
       () => {
         setIsMessageCopied(true);
@@ -58,7 +54,11 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
               alt={metadata?.alt || "Generated image"}
               className="w-full h-auto rounded-md"
             />
-            {metadata?.filename && <p className="text-sm text-slate-400 mt-1">{metadata.filename}</p>}
+            {metadata?.filename && (
+              <p className="text-sm text-slate-400 mt-1">
+                {metadata.filename}
+              </p>
+            )}
           </div>
         );
       case "search":
@@ -103,7 +103,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                   navigator.clipboard.writeText(codeString).then(
                     () => {
                       setIsCopied(true);
-                      setTimeout(() => setIsCopied(false), 2000); // Reset after 2 seconds
+                      setTimeout(() => setIsCopied(false), 2000);
                     },
                     (err) => {
                       console.error("Failed to copy: ", err);
@@ -117,8 +117,8 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                       onClick={handleCopy}
                       className={cn(
                         "absolute top-2 right-2 p-1.5 rounded-md text-slate-400 hover:text-slate-200 hover:bg-slate-700",
-                        "opacity-0 group-hover:opacity-100 transition-opacity", // Show on hover
-                        isCopied && "bg-green-600 text-white hover:bg-green-700" // Copied state style
+                        "opacity-0 group-hover:opacity-100 transition-opacity",
+                        isCopied && "bg-green-600 text-white hover:bg-green-700"
                       )}
                       aria-label={isCopied ? "Copied!" : "Copy code"}
                     >
@@ -138,7 +138,13 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                     </SyntaxHighlighter>
                   </div>
                 ) : (
-                  <code className={cn(className, "bg-slate-600 px-1 py-0.5 rounded-sm")} {...props}>
+                  <code
+                    className={cn(
+                      className,
+                      "bg-slate-600 px-1 py-0.5 rounded-sm"
+                    )}
+                    {...props}
+                  >
                     {children}
                   </code>
                 );
@@ -154,7 +160,6 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   const AvatarComponent = isUser ? User2 : Bot;
   const avatarColor = isUser ? "text-blue-300" : "text-purple-300";
 
-  // System messages will not have an avatar and will be centered
   if (isSystem) {
     return (
       <div className="flex w-full justify-center group/message">
@@ -171,13 +176,18 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
   const messageBubble = (
     <div
       className={cn(
-        "relative max-w-[85%] p-3 rounded-lg shadow-md group/actions", // Increased max-width slightly
+        "relative max-w-[85%] p-3 rounded-lg shadow-md group/actions",
         isUser
-          ? "bg-blue-600 text-white rounded-br-none" // Different rounding for user
-          : "bg-gray-700 text-white rounded-bl-none"  // Different rounding for assistant
+          ? "bg-blue-600 text-white rounded-br-none"
+          : "bg-gray-700 text-white rounded-bl-none"
       )}
     >
-      <div className="absolute top-1.5 right-1.5 flex items-center space-x-1 opacity-0 group-hover/actions:opacity-100 transition-opacity duration-200 z-10">
+      <div className="prose prose-sm prose-invert max-w-none message-content">
+        {renderContent()}
+      </div>
+
+      {/* Bottom-right controls */}
+      <div className="flex justify-end items-center gap-2 mt-3">
         {isAssistant && onRetryMessage && (
           <button
             onClick={() => onRetryMessage(id)}
@@ -203,20 +213,17 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
             <Copy size={14} />
           )}
         </button>
+        <p className="text-xs text-slate-300 ml-1">
+          {format(new Date(timestamp), "p")}
+        </p>
       </div>
-      <div className="prose prose-sm prose-invert max-w-none message-content"> {/* Added prose styles for markdown */}
-         {renderContent()}
-      </div>
-      <p className="text-xs text-slate-300 mt-2 pt-1 text-right"> {/* Timestamp to the right */}
-        {format(new Date(timestamp), "p")} {/* Only time for brevity */}
-      </p>
     </div>
   );
 
   return (
     <div
       className={cn(
-        "flex w-full items-start space-x-3 group/message", // items-start for avatar alignment
+        "flex w-full items-start space-x-3 group/message",
         isUser ? "justify-end" : "justify-start"
       )}
     >
@@ -234,5 +241,3 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
     </div>
   );
 };
-
-

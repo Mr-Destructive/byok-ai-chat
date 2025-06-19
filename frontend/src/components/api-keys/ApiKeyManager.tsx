@@ -47,7 +47,6 @@ export function ApiKeyManager() {
   const [apiKey, setApiKey] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
-  const [expandedProviders, setExpandedProviders] = useState<Record<string, boolean>>({});
   const { toast } = useToast();
 
   useEffect(() => {
@@ -159,13 +158,6 @@ export function ApiKeyManager() {
     setSelectedModel(availableModels.length > 0 ? availableModels[0] : '');
   };
 
-  const toggleProviderExpansion = (providerId: string) => {
-    setExpandedProviders((prev) => ({
-      ...prev,
-      [providerId]: !prev[providerId],
-    }));
-  };
-
   const getProviderDisplayName = (providerId: string) => {
     const provider = providers.find((p) => p.id === providerId);
     return provider ? provider.name : providerId;
@@ -199,44 +191,44 @@ export function ApiKeyManager() {
 
   if (loading || providersLoading) {
     return (
-      <div className="h-full flex items-center justify-center">
-        <div className="text-white">Loading...</div>
+      <div className="h-full flex items-center justify-center bg-gray-900">
+        <div className="text-white animate-pulse">Loading...</div>
       </div>
     );
   }
 
   return (
-    <div className="h-full w-full flex flex-col items-center justify-start bg-slate-900 py-8 px-2 overflow-auto">
-      <div className="w-full max-w-3xl mx-auto flex flex-col gap-6">
-        <div className="p-6 border-b border-slate-700/50 bg-slate-900/30 backdrop-blur-sm">
+    <div className="h-full w-full flex flex-col items-center bg-gray-900 py-12 px-4 overflow-auto">
+      <div className="w-full max-w-4xl mx-auto flex flex-col gap-8">
+        <div className="p-8 rounded-2xl bg-gray-800/50 backdrop-blur-lg border border-gray-700/50">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-xl font-semibold text-slate-100">API Key Management</h2>
-              <p className="text-slate-400 mt-1">Securely manage your AI provider API keys</p>
+              <h2 className="text-2xl font-bold text-white">API Key Management</h2>
+              <p className="text-gray-400 mt-2">Securely manage your AI provider API keys for seamless integration.</p>
             </div>
             <Dialog open={showModal} onOpenChange={setShowModal}>
               <DialogTrigger asChild>
-                <Button className="bg-blue-600 hover:bg-blue-700 text-white">
-                  <Plus className="mr-2 h-4 w-4" /> Add API Key
+                <Button className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg">
+                  <Plus className="mr-2 h-5 w-5" /> Add API Key
                 </Button>
               </DialogTrigger>
-              <DialogContent className="bg-slate-800 border-slate-700 text-slate-100 sm:max-w-[480px]">
+              <DialogContent className="bg-gray-800 border-gray-700 text-white sm:max-w-[500px] rounded-2xl">
                 <DialogHeader>
-                  <DialogTitle>Add New API Key</DialogTitle>
-                  <DialogDescription className="text-slate-400">
+                  <DialogTitle className="text-xl">Add New API Key</DialogTitle>
+                  <DialogDescription className="text-gray-400">
                     Enter your API key details below. Ensure you select the correct provider and model.
                   </DialogDescription>
                 </DialogHeader>
-                <div className="grid gap-4 py-4">
+                <div className="grid gap-6 py-6">
                   <div className="grid grid-cols-4 items-center gap-4">
-                    <Label htmlFor="provider" className="text-right text-slate-300">
+                    <Label htmlFor="provider" className="text-right text-gray-300 font-medium">
                       Provider
                     </Label>
                     <select
                       id="provider"
                       value={selectedProvider}
                       onChange={(e) => handleProviderChange(e.target.value)}
-                      className="col-span-3 bg-slate-700 border-slate-600 text-slate-100 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                      className="col-span-3 bg-gray-700 border-gray-600 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 transition-all"
                     >
                       <option value="">Select a provider...</option>
                       {providers.map((provider) => (
@@ -249,14 +241,14 @@ export function ApiKeyManager() {
 
                   {selectedProvider && (
                     <div className="grid grid-cols-4 items-center gap-4">
-                      <Label htmlFor="model" className="text-right text-slate-300">
+                      <Label htmlFor="model" className="text-right text-gray-300 font-medium">
                         Model
                       </Label>
                       <select
                         id="model"
                         value={selectedModel}
                         onChange={(e) => setSelectedModel(e.target.value)}
-                        className="col-span-3 bg-slate-700 border-slate-600 text-slate-100 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                        className="col-span-3 bg-gray-700 border-gray-600 text-white rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 transition-all"
                       >
                         <option value="">Select a model...</option>
                         {(modelsByProvider[selectedProvider] || []).map((model) => (
@@ -266,13 +258,13 @@ export function ApiKeyManager() {
                         ))}
                       </select>
                       {(modelsByProvider[selectedProvider] || []).length === 0 && (
-                        <p className="col-span-4 text-xs text-amber-400 mt-1 text-center">No models available for this provider</p>
+                        <p className="col-span-4 text-xs text-amber-400 mt-2 text-center">No models available for this provider</p>
                       )}
                     </div>
                   )}
 
                   <div className="grid grid-cols-4 items-center gap-4">
-                    <Label htmlFor="keyName" className="text-right text-slate-300">
+                    <Label htmlFor="keyName" className="text-right text-gray-300 font-medium">
                       Key Name
                     </Label>
                     <Input
@@ -280,12 +272,12 @@ export function ApiKeyManager() {
                       value={keyName}
                       onChange={(e) => setKeyName(e.target.value)}
                       placeholder="e.g., My OpenAI Key"
-                      className="col-span-3 bg-slate-700 border-slate-600 text-slate-100 focus:ring-2 focus:ring-blue-500"
+                      className="col-span-3 bg-gray-700 border-gray-600 text-white focus:ring-2 focus:ring-blue-500 rounded-lg px-4 py-2"
                     />
                   </div>
 
                   <div className="grid grid-cols-4 items-center gap-4">
-                    <Label htmlFor="apiKey" className="text-right text-slate-300">
+                    <Label htmlFor="apiKey" className="text-right text-gray-300 font-medium">
                       API Key
                     </Label>
                     <div className="col-span-3 relative">
@@ -295,29 +287,29 @@ export function ApiKeyManager() {
                         value={apiKey}
                         onChange={(e) => setApiKey(e.target.value)}
                         placeholder="Paste your API key here"
-                        className="bg-slate-700 border-slate-600 text-slate-100 focus:ring-2 focus:ring-blue-500 pr-10"
+                        className="bg-gray-700 border-gray-600 text-white focus:ring-2 focus:ring-blue-500 rounded-lg px-4 py-2 pr-12"
                       />
                       <button
                         type="button"
                         onClick={() => setShowApiKey(!showApiKey)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-200 transition-colors"
                         aria-label={showApiKey ? "Hide API key" : "Show API key"}
                       >
-                        {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        {showApiKey ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                       </button>
                     </div>
                   </div>
                 </div>
                 <DialogFooter>
                   <DialogClose asChild>
-                    <Button variant="outline" className="border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-slate-100">
+                    <Button variant="outline" className="border-gray-600 text-gray-300 hover:bg-gray-700 hover:text-white rounded-lg px-6 py-2">
                       Cancel
                     </Button>
                   </DialogClose>
                   <Button
                     onClick={handleAddKey}
                     disabled={submitting || !selectedProvider || !selectedModel || !keyName || !apiKey}
-                    className="bg-blue-600 hover:bg-blue-700 text-white"
+                    className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-6 py-2"
                   >
                     {submitting ? 'Adding...' : 'Add API Key'}
                   </Button>
@@ -327,8 +319,6 @@ export function ApiKeyManager() {
           </div>
         </div>
 
-        {/* The old Card-based modal structure is removed. */}
-
         <ScrollArea className="flex-1">
           {Object.entries(
             apiKeys.reduce((acc, key) => {
@@ -337,36 +327,36 @@ export function ApiKeyManager() {
               return acc;
             }, {} as Record<string, ApiKey[]>)
           ).map(([providerId, keys]) => (
-            <Card key={providerId} className="mb-4 bg-slate-800 border-slate-700 text-slate-100">
-              <CardHeader className="flex flex-row items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Key className="h-5 w-5 text-slate-300" />
-                  <CardTitle className="text-slate-100">{getProviderDisplayName(providerId)}</CardTitle>
+            <Card key={providerId} className="mb-6 bg-gray-800/70 border-gray-700/50 text-white rounded-2xl shadow-lg">
+              <CardHeader className="flex flex-row items-center justify-between p-6">
+                <div className="flex items-center gap-3">
+                  <Key className="h-6 w-6 text-gray-300" />
+                  <CardTitle className="text-xl font-semibold">{getProviderDisplayName(providerId)}</CardTitle>
                 </div>
-                <Badge className={`${getProviderColor(providerId)} text-white`}>
+                <Badge className={`${getProviderColor(providerId)} text-white px-3 py-1 rounded-full`}>
                   {keys.length} {keys.length === 1 ? 'key' : 'keys'}
                 </Badge>
               </CardHeader>
-              <CardContent>
-                <div className="space-y-2">
+              <CardContent className="p-6 pt-0">
+                <div className="space-y-3">
                   {keys
                     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
                     .map((key) => (
                       <div
                         key={key.id}
-                        className="flex items-center justify-between p-3 bg-slate-700 rounded-lg" // Solid bg-slate-700
+                        className="flex items-center justify-between p-4 bg-gray-700/50 rounded-xl border border-gray-600/50"
                       >
-                        <div>
-                          <p className="text-sm font-medium text-slate-100">{key.key_name}</p>
-                          <p className="text-xs text-slate-400">Model: {key.model_name}</p>
-                          <p className="text-xs text-slate-400">
+                        <div className="flex flex-col">
+                          <p className="text-sm font-medium text-white">{key.key_name}</p>
+                          <p className="text-xs text-gray-400">Model: {key.model_name}</p>
+                          <p className="text-xs text-gray-400">
                             Added: {new Date(key.created_at).toLocaleDateString()}
                           </p>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-3">
                           <Badge
                             variant={key.is_active ? 'default' : 'secondary'}
-                            className={key.is_active ? 'bg-green-600 text-white' : 'bg-slate-600 text-slate-200'}
+                            className={key.is_active ? 'bg-green-600 text-white' : 'bg-gray-600 text-gray-200'}
                           >
                             {key.is_active ? <Check className="h-4 w-4 mr-1" /> : <AlertCircle className="h-4 w-4 mr-1" />}
                             {key.is_active ? 'Active' : 'Inactive'}
@@ -375,9 +365,9 @@ export function ApiKeyManager() {
                             variant="ghost"
                             size="sm"
                             onClick={() => handleDeleteKey(key.id)}
-                            className="text-red-400 hover:text-red-300 hover:bg-slate-600"
+                            className="text-red-400 hover:text-red-300 hover:bg-gray-600 rounded-full p-2"
                           >
-                            <Trash2 className="h-4 w-4" />
+                            <Trash2 className="h-5 w-5" />
                           </Button>
                         </div>
                       </div>
@@ -387,7 +377,7 @@ export function ApiKeyManager() {
             </Card>
           ))}
           {apiKeys.length === 0 && (
-            <p className="text-center text-slate-400">No API keys added yet.</p>
+            <p className="text-center text-gray-400 text-lg py-12">No API keys added yet. Start by adding a key above.</p>
           )}
         </ScrollArea>
       </div>
