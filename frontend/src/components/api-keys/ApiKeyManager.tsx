@@ -197,7 +197,7 @@ export function ApiKeyManager() {
 
   return (
     <div className="h-full w-full flex flex-col items-center justify-start bg-slate-900 py-8 px-2 overflow-auto">
-      <div className="w-full max-w-3xl flex flex-col gap-6">
+      <div className="w-full max-w-3xl mx-auto flex flex-col gap-6">
         <div className="p-6 border-b border-slate-700/50 bg-slate-900/30 backdrop-blur-sm">
           <div className="flex items-center justify-between">
             <div>
