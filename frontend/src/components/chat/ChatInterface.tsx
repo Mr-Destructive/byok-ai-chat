@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
-import { MessageSquare, Send, Paperclip, X, RefreshCw } from "lucide-react"; // Added RefreshCw just in case, though not strictly needed here
+import { MessageSquare, Send, Paperclip, X, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ChatMessage } from "./ChatMessage";
 import { useSidebar } from "../layout/Sidebar";
@@ -25,6 +25,16 @@ interface Message {
   created_at: string;
 }
 
+interface ApiKey {
+  id: string;
+  provider: string;
+  key_name: string;
+  is_active: boolean;
+  api_key?: string; // Optional to match backend response
+  model_name?: string; // Optional, included from backend
+  created_at?: string; // Optional, included from backend
+}
+
 export function ChatInterface({
   currentThreadId,
   setCurrentThreadId,
@@ -38,46 +48,77 @@ export function ChatInterface({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [selectedApiKeyId, setSelectedApiKeyId] = useState<string | undefined>(undefined);
-  const [availableApiKeys, setAvailableApiKeys] = useState<any[]>([]);
-
   const { selectedProvider, selectedModel } = useSidebar();
-  // Helper: check if API key exists for provider
-  // Always use provider id for API key lookup
-  const hasProviderApiKey = (providerId: string): boolean => {
-    try {
-      const keysRaw = localStorage.getItem('apiKeys');
-      if (!keysRaw) return false;
-      const keys = JSON.parse(keysRaw);
-      return Array.isArray(keys) && keys.some((k: any) => k.provider === providerId && k.is_active);
-    } catch {
-      return false;
-    }
-  };
 
-  // Update availableApiKeys and selectedApiKeyId when provider or model changes
-  useEffect(() => {
-    try {
-      const keysRaw = localStorage.getItem('apiKeys');
-      if (!keysRaw) return setAvailableApiKeys([]);
-      const keys = JSON.parse(keysRaw);
-      // Always use provider id for filtering
-      const filtered = Array.isArray(keys) ? keys.filter((k: any) => k.provider === selectedProvider && k.is_active) : [];
-      setAvailableApiKeys(filtered);
-      // Reset selectedApiKeyId if provider changes
-      if (filtered.length > 0) {
-        setSelectedApiKeyId(filtered[0].id);
-      } else {
-        setSelectedApiKeyId(undefined);
+  // Normalize provider for case-insensitive comparison
+  const normalizeProvider = (provider: string | undefined) => provider?.toLowerCase().trim() || "";
+
+  // Fetch API keys from backend
+  const { 
+    data: availableApiKeys = [], 
+    isLoading: apiKeysLoading, 
+    isError: apiKeysError, 
+    error: apiKeysErrorObj, 
+    refetch: refetchApiKeys 
+  } = useQuery({
+    queryKey: ["apiKeys", selectedProvider],
+    queryFn: async () => {
+      console.log("Fetching API keys for provider:", selectedProvider);
+      const keys = await chatApi.getApiKeys();
+      console.log("Raw API keys response:", keys);
+      if (!Array.isArray(keys)) {
+        console.error("Invalid API keys format: Expected array, got:", keys);
+        return [];
       }
-    } catch {
-      setAvailableApiKeys([]);
-      setSelectedApiKeyId(undefined);
-    }
-  }, [selectedProvider, selectedModel]); // include selectedModel for robustness
+      const filtered = keys.filter((k: ApiKey) => 
+        normalizeProvider(k.provider) === normalizeProvider(selectedProvider) && k.is_active
+      );
+      console.log("Filtered API keys:", filtered);
+      return filtered;
+    },
+    onError: (error: any) => {
+      console.error("Error fetching API keys:", error);
+      const errorMessage = error.message || "Failed to load API keys. Please check your connection or authentication.";
+      toast({
+        title: "API Keys Error",
+        description: (
+          <>
+            {errorMessage}{' '}
+            <Button
+              variant="link"
+              className="p-0 h-auto text-blue-400"
+              onClick={() => refetchApiKeys()}
+            >
+              Retry <RefreshCw className="ml-1 w-4 h-4" />
+            </Button>
+          </>
+        ),
+        duration: 10000,
+      });
+    },
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
 
+  // Update selectedApiKeyId when availableApiKeys changes
   useEffect(() => {
-    // removed debug log("ChatInterface props updated:", { selectedProvider, selectedModel });
-  }, [selectedProvider, selectedModel]);
+    console.log("Available API keys updated:", availableApiKeys);
+    if (availableApiKeys.length > 0 && !selectedApiKeyId) {
+      setSelectedApiKeyId(availableApiKeys[0].id);
+      console.log("Selected API key ID:", availableApiKeys[0].id);
+    } else if (availableApiKeys.length === 0) {
+      setSelectedApiKeyId(undefined);
+      console.log("No API keys available, selectedApiKeyId set to undefined");
+    }
+  }, [availableApiKeys, selectedApiKeyId]);
+
+  // Helper: check if API key exists for provider
+  const hasProviderApiKey = (providerId: string | undefined): boolean => {
+    const result = availableApiKeys.some((k: ApiKey) => 
+      normalizeProvider(k.provider) === normalizeProvider(providerId) && k.is_active
+    );
+    console.log(`hasProviderApiKey(${providerId}):`, result);
+    return result;
+  };
 
   const { data: messages, refetch: refetchMessages, isLoading: messagesLoading } = useQuery({
     queryKey: ["messages", currentThreadId],
@@ -87,17 +128,21 @@ export function ChatInterface({
 
   const sendMessageMutation = useMutation({
     mutationFn: async ({ message, threadId }: { message: string; threadId?: string }) => {
+      console.log("Sending message with:", { selectedProvider, selectedApiKeyId });
+      if (!selectedProvider) {
+        throw new Error("No provider selected. Please select a provider in the sidebar.");
+      }
       if (!hasProviderApiKey(selectedProvider)) {
         throw new Error(`No active API key found for provider: ${selectedProvider}. Please add one in the API Keys tab.`);
       }
-      // removed debug log("Sending message:", { message, provider: selectedProvider, model_name: selectedModel, threadId });
       try {
         const response = await chatApi.sendMessage({
           message,
           model_name: selectedModel || "openrouter/mistralai/mistral-7b-instruct:free",
-          provider: selectedProvider || "openrouter",
+          provider: selectedProvider,
           thread_id: threadId,
           stream: true,
+          api_key_id: selectedApiKeyId,
         });
         if (response.headers.get('content-type')?.includes('text/event-stream')) {
           const reader = response.body?.getReader();
@@ -156,71 +201,60 @@ export function ChatInterface({
       setIsComposing(false);
     },
     onError: (error: any) => {
-      // Log the full error object for debugging purposes first
       console.error("Chat send error object:", error);
-
-      let errorMessage: string | React.ReactNode = 'Failed to send message'; // Default error message
-      let toastTitle = 'Message Error'; // Default toast title
-      let toastOptions: { duration?: number } = {}; // Default toast options
+      let errorMessage: string | React.ReactNode = 'Failed to send message';
+      let toastTitle = 'Message Error';
+      let toastOptions: { duration?: number } = {};
 
       if (error.status === 422) {
         try {
-          // Attempt to parse a more specific error message if available
-          errorMessage = error.message.includes('detail') 
+          errorMessage = error.message.includes('detail')
             ? JSON.parse(error.message.match(/\| Response: (.+)/)?.[1] || '{}').detail
             : error.message;
         } catch {
-          // Fallback to the original error message if parsing fails
           errorMessage = error.message || 'Validation error';
         }
       } else if (error.message && error.message.includes('INCOMPLETE_CHUNKED_ENCODING')) {
         errorMessage = 'Connection interrupted. Please try again.';
       } else if (error.message && error.message.includes('No active API key found for provider')) {
-        // Handle specific "No active API key" error
-        let providerName = selectedProvider; // Prioritize provider from UI selection
-
+        let providerName = selectedProvider;
         if (!providerName) {
-          // Fallback to extracting provider name from the error message if not available from UI
           const match = error.message.match(/No active API key found for provider: (.*)/);
-          if (match && match[1]) {
-            providerName = match[1];
-          } else {
-            providerName = 'the selected provider'; // Ultimate fallback
-          }
+          providerName = match && match[1] ? match[1] : 'the selected provider';
         }
-
-        // Capitalize the first letter of the provider name for display
         const displayProviderName = providerName.charAt(0).toUpperCase() + providerName.slice(1);
-
         errorMessage = (
           <>
             No active API key for {displayProviderName}. Please add or activate your key on the{' '}
             <Link to="/api-keys" className="underline hover:text-blue-400 transition-colors">API Keys page</Link>.
           </>
         );
-        toastTitle = 'API Key Missing'; // Specific title for this error
-        toastOptions.duration = 10000; // Longer duration for this guidance
+        toastTitle = 'API Key Missing';
+        toastOptions.duration = 10000;
       } else {
-        // Generic error handler
         errorMessage = error.message || String(error) || 'An unknown error occurred.';
       }
-
-      // Display the toast notification with the determined title, message, and options
       toast({ title: toastTitle, description: errorMessage, ...toastOptions });
     },
   });
 
   const handleSendMessage = () => {
     if (!message.trim() && !file) return;
-    
-    if (message.length > 4000) {
-      toast({ title: 'Error', description: 'Message is too long. Please keep it under 4000 characters.'});
+    if (apiKeysLoading) {
+      toast({ title: "Error", description: "API keys are still loading. Please wait." });
       return;
     }
-
+    if (apiKeysError) {
+      toast({ title: "Error", description: "Cannot send message due to API key loading error. Please retry loading keys." });
+      return;
+    }
+    if (message.length > 4000) {
+      toast({ title: 'Error', description: 'Message is too long. Please keep it under 4000 characters.' });
+      return;
+    }
     if (file) {
       if (file.size > 10 * 1024 * 1024) {
-        toast({ title: 'Error', description: 'File is too large. Please upload a file smaller than 10MB.'});
+        toast({ title: 'Error', description: 'File is too large. Please upload a file smaller than 10MB.' });
         return;
       }
       fileUploadMutation.mutate(file);
@@ -232,8 +266,7 @@ export function ChatInterface({
     }
   };
 
-  // File upload is not implemented in chatApi. Show error if attempted.
-const fileUploadMutation = useMutation({
+  const fileUploadMutation = useMutation({
     mutationFn: async (file: File) => {
       throw new Error('File upload is not supported in this build.');
     },
@@ -246,7 +279,7 @@ const fileUploadMutation = useMutation({
     },
     onError: (error) => {
       console.error("Error uploading file:", error);
-      toast({ title: 'Error', description: `Failed to upload file. Please try again or check your connection.`});
+      toast({ title: 'Error', description: `Failed to upload file. Please try again or check your connection.` });
     },
   });
 
@@ -256,18 +289,17 @@ const fileUploadMutation = useMutation({
       setFile(selectedFile);
       setIsComposing(true);
       if (fileInputRef.current) {
-          fileInputRef.current.value = "";
-        }
+        fileInputRef.current.value = "";
       }
-    };
+    }
+  };
 
-    const handleRemoveFile = () => {
-      setFile(null);
-      if (!message.trim()) {
-        setIsComposing(false);
-      }
-    };
-
+  const handleRemoveFile = () => {
+    setFile(null);
+    if (!message.trim()) {
+      setIsComposing(false);
+    }
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -300,20 +332,15 @@ const fileUploadMutation = useMutation({
       toast.error("Cannot retry: Message list not loaded.");
       return;
     }
-
-    const messageToRetryIndex = messages.findIndex(msg => msg.id === messageIdToRetry);
-
+    const messageToRetryIndex = messages.findIndex((msg: Message) => msg.id === messageIdToRetry);
     if (messageToRetryIndex === -1) {
       toast.error("Cannot retry: Original message not found.");
       return;
     }
-
     if (messages[messageToRetryIndex].role !== 'assistant') {
       toast.error("Cannot retry: Only assistant messages can be retried.");
       return;
     }
-
-    // Find the last user message *before* the assistant message to be retried
     let lastUserMessageContent: string | null = null;
     for (let i = messageToRetryIndex - 1; i >= 0; i--) {
       if (messages[i].role === 'user') {
@@ -321,40 +348,16 @@ const fileUploadMutation = useMutation({
         break;
       }
     }
-
     if (!lastUserMessageContent) {
       toast.error("Cannot retry: No preceding user message found to use as context.");
       return;
     }
-
-    // Optional: Remove the failed assistant message and any subsequent messages
-    // For now, we will just send the request and let the new response appear.
-    // If you want to remove the old message, you'd need to update the local cache or refetch carefully.
-    // Example: queryClient.setQueryData(['messages', currentThreadId], (oldData: Message[] | undefined) => oldData ? oldData.slice(0, messageToRetryIndex) : []);
-
-
     toast.info("Retrying message...");
     sendMessageMutation.mutate({
-      message: lastUserMessageContent, // Send the content of the *preceding user message*
+      message: lastUserMessageContent,
       threadId: currentThreadId,
-      // Potentially add a flag here if your backend needs to know it's a retry
     });
   };
-
-  useEffect(() => {
-    try {
-      const keysRaw = localStorage.getItem('apiKeys');
-      if (!keysRaw) return setAvailableApiKeys([]);
-      const keys = JSON.parse(keysRaw);
-      const filtered = Array.isArray(keys) ? keys.filter((k: any) => k.provider === selectedProvider && k.is_active) : [];
-      setAvailableApiKeys(filtered);
-      if (filtered.length > 0 && !selectedApiKeyId) {
-        setSelectedApiKeyId(filtered[0].id);
-      }
-    } catch {
-      setAvailableApiKeys([]);
-    }
-  }, [selectedProvider]);
 
   return (
     <div className="flex-1 flex flex-col h-full bg-background text-foreground">
@@ -377,17 +380,16 @@ const fileUploadMutation = useMutation({
             messages?.map((msg: Message) => (
               <ChatMessage
                 key={msg.id}
-                id={msg.id} // Pass the id
+                id={msg.id}
                 role={msg.role}
                 content={msg.content}
                 timestamp={msg.created_at}
-                type="text" // Assuming text for now, this might need to be dynamic later
+                type="text"
                 onRetryMessage={msg.role === 'assistant' ? handleRetryMessage : undefined}
-                // isLoadingRetry={retryingMessageId === msg.id && sendMessageMutation.isPending} // If using specific loading state
               />
             ))
           )}
-          {isLoading && !messages?.find(m => m.role === 'assistant' && m.content === "") && ( // Avoid showing global loading if it's a retry of an existing message
+          {isLoading && !messages?.find((m: Message) => m.role === 'assistant' && m.content === "") && (
             <div className="flex justify-start">
               <div className="bg-card rounded-2xl px-4 py-3 max-w-[80%] shadow-sm">
                 <div className="flex space-x-2">
@@ -400,19 +402,40 @@ const fileUploadMutation = useMutation({
           )}
         </div>
       </ScrollArea>
-      {/* Chat Prompt Area */}
       <div className="border-t border-border bg-card/95 backdrop-blur-sm shadow-lg dark:bg-gray-900/95">
         <div className="max-w-3xl mx-auto p-6">
-          {/* API Key Dropdown if multiple keys for provider */}
+          {apiKeysLoading && (
+            <div className="mb-4 p-3 bg-yellow-100 text-yellow-800 rounded-lg">
+              Loading API keys...
+            </div>
+          )}
+          {apiKeysError && (
+            <div className="mb-4 p-3 bg-red-100 text-red-800 rounded-lg">
+              Failed to load API keys: {apiKeysErrorObj?.message || "Unknown error"}.{' '}
+              <Button
+                variant="link"
+                className="p-0 h-auto text-blue-400"
+                onClick={() => refetchApiKeys()}
+              >
+                Retry <RefreshCw className="ml-1 w-4 h-4" />
+              </Button>
+            </div>
+          )}
+          {availableApiKeys.length === 0 && !apiKeysLoading && !apiKeysError && (
+            <div className="mb-4 p-3 bg-yellow-100 text-yellow-800 rounded-lg">
+              No active API key for {selectedProvider || "the selected provider"}. Please add one in the{' '}
+              <Link to="/api-keys" className="underline">API Keys page</Link>.
+            </div>
+          )}
           {availableApiKeys.length > 1 && (
             <div className="mb-4">
               <label className="block text-xs font-semibold text-muted-foreground mb-1">Select API Key for this chat</label>
               <select
                 className="w-full rounded-lg border border-border bg-background px-3 py-2 text-foreground focus:ring-2 focus:ring-blue-500"
-                value={selectedApiKeyId}
-                onChange={e => setSelectedApiKeyId(e.target.value)}
+                value={selectedApiKeyId || ""}
+                onChange={(e) => setSelectedApiKeyId(e.target.value)}
               >
-                {availableApiKeys.map((key) => (
+                {availableApiKeys.map((key: ApiKey) => (
                   <option key={key.id} value={key.id}>{key.key_name}</option>
                 ))}
               </select>
@@ -435,7 +458,6 @@ const fileUploadMutation = useMutation({
               </Button>
             </div>
           )}
-          {/* ...rest of prompt area... */}
           <div className="flex items-center justify-between">
             <Button
               variant="ghost"
@@ -445,7 +467,6 @@ const fileUploadMutation = useMutation({
             >
               <Paperclip className="w-5 h-5" />
             </Button>
-
             <div className="flex-1 relative">
               <Textarea
                 ref={textareaRef}
@@ -457,19 +478,17 @@ const fileUploadMutation = useMutation({
                 onKeyDown={handleKeyDown}
                 placeholder="Type your message... (Shift+Enter for new line)"
                 className="min-h-[48px] max-h-[120px] resize-none bg-card border-gray-700 text-foreground placeholder-gray-400 focus:border-blue-500 focus:ring-blue-500/30 rounded-xl pr-12 py-3 text-sm font-medium transition-all duration-200"
-                disabled={isLoading}
+                disabled={isLoading || apiKeysLoading || apiKeysError}
               />
             </div>
-
             <Button
               onClick={handleSendMessage}
-              disabled={(!message.trim() && !file) || isLoading}
+              disabled={(!message.trim() && !file) || isLoading || apiKeysLoading || apiKeysError}
               className="flex-shrink-0 h-12 w-12 p-0 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl transition-colors duration-200"
             >
               <Send className="w-5 h-5" />
             </Button>
           </div>
-
           <div className="mt-3 flex items-center justify-center">
             <p className="text-xs text-muted-foreground">
               Using <span className="text-blue-400">{selectedModel}</span> via{" "}
@@ -487,6 +506,6 @@ const fileUploadMutation = useMutation({
       />
     </div>
   );
-};
+}
 
 export default ChatInterface;

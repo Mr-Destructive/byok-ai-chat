@@ -98,10 +98,10 @@ class APIKeyCreate(BaseModel):
 class APIKeyResponse(BaseModel):
     id: str
     provider: str
-    model_name: str
     key_name: str
     is_active: bool
     created_at: datetime
+    model_name: str | None
     
     class Config:
         from_attributes = True
@@ -132,7 +132,6 @@ class MessageResponse(BaseModel):
     created_at: datetime
     parent_message_id: Optional[str] = None
     branch_id: Optional[str] = None
-    error_info: Optional[str] = None # New field
     
     class Config:
         from_attributes = True
@@ -175,12 +174,13 @@ async def _as_async_generator(sync_gen):
     """
     Wraps a synchronous generator to make it behave like an asynchronous generator.
     """
-    for item in sync_gen:
-        yield item
-        # Add a small sleep if needed to ensure other async tasks can run,
-        # especially if the sync_gen is very fast and CPU-bound, though
-        # for I/O bound operations from litellm, this might not be strictly necessary.
-        # await asyncio.sleep(0) # Optional: uncomment if needed
+    try:
+        for item in sync_gen:
+            yield item
+            await asyncio.sleep(0.001)  # Small sleep to yield control to event loop
+    except Exception as e:
+        logger.error(f"Error in _as_async_generator: {str(e)}")
+        raise
 
 # Utility Functions
 def get_password_hash(password: str) -> str:
@@ -572,16 +572,21 @@ async def get_api_keys(
     db: Session = Depends(get_db)
 ):
     api_keys = db.query(APIKey).filter(APIKey.user_id == current_user.id).all()
+    keys_by_provider = {}
+    for key in api_keys:
+        if key.is_active and key.provider not in keys_by_provider:
+            keys_by_provider[key.provider] = key
+    
     return [
         APIKeyResponse(
             id=str(key.id),
             provider=key.provider,
-            model_name=key.model_name,
             key_name=key.key_name,
             is_active=key.is_active,
-            created_at=key.created_at
+            created_at=key.created_at,
+            model_name=key.model_name,
         )
-        for key in api_keys
+        for key in keys_by_provider.values()
     ]
 
 @app.delete("/api-keys/{key_id}")
@@ -655,6 +660,7 @@ async def get_thread_messages(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    # Verify thread exists and belongs to the user
     thread = db.query(Thread).filter(
         Thread.id == thread_id,
         Thread.user_id == current_user.id
@@ -663,7 +669,11 @@ async def get_thread_messages(
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
     
-    # Define core columns that must exist
+    # Check for optional columns using hasattr
+    has_parent_column = hasattr(Message, 'parent_message_id')
+    has_branch_column = hasattr(Message, 'branch_id')
+    
+    # Define columns to query
     columns = [
         Message.id,
         Message.thread_id,
@@ -671,34 +681,12 @@ async def get_thread_messages(
         Message.content,
         Message.created_at
     ]
-    
-    # Check if parent_message_id exists
-    has_parent_column = True
-    try:
-        db.execute(sa.text("SELECT parent_message_id FROM messages LIMIT 1"))
+    if has_parent_column:
         columns.append(Message.parent_message_id)
-    except sa.exc.OperationalError:
-        logger.warning("parent_message_id column not found in messages table")
-        has_parent_column = False
-    
-    # Check if branch_id exists
-    has_branch_column = True
-    try:
-        db.execute(sa.text("SELECT branch_id FROM messages LIMIT 1"))
+    if has_branch_column:
         columns.append(Message.branch_id)
-    except sa.exc.OperationalError:
-        logger.warning("branch_id column not found in messages table")
-        has_branch_column = False
-
-    # Check if error_info exists
-    has_error_info_column = True
-    try:
-        db.execute(sa.text("SELECT error_info FROM messages LIMIT 1"))
-        columns.append(Message.error_info)
-    except sa.exc.OperationalError:
-        logger.warning("error_info column not found in messages table")
-        has_error_info_column = False
     
+    # Build query
     query = db.query(*columns).filter(Message.thread_id == thread_id)
     if has_branch_column and branch_id:
         query = query.filter(Message.branch_id == branch_id)
@@ -708,25 +696,21 @@ async def get_thread_messages(
     messages = query.order_by(Message.created_at).all()
     
     def build_message_response(msg_tuple):
-        idx = 0
         msg_dict = {
-            "id": str(msg_tuple[idx]),
-            "role": msg_tuple[idx + 2],
-            "content": msg_tuple[idx + 3],
-            "created_at": msg_tuple[idx + 4],
+            "id": str(msg_tuple[0]),
+            "thread_id": str(msg_tuple[1]),
+            "role": msg_tuple[2],
+            "content": msg_tuple[3],
+            "created_at": msg_tuple[4].isoformat(),
             "parent_message_id": None,
             "branch_id": None,
-            "error_info": None
         }
-        idx += 5
+        idx = 5
         if has_parent_column:
             msg_dict["parent_message_id"] = str(msg_tuple[idx]) if msg_tuple[idx] else None
             idx += 1
         if has_branch_column:
             msg_dict["branch_id"] = str(msg_tuple[idx]) if msg_tuple[idx] else None
-            idx += 1
-        if has_error_info_column: # Check the flag from the column check
-            msg_dict["error_info"] = str(msg_tuple[idx]) if msg_tuple[idx] else None
             idx += 1
         return MessageResponse(**msg_dict)
     
@@ -900,14 +884,6 @@ async def get_shared_thread(
     except sa.exc.OperationalError:
         has_branch_column = False
 
-    # Check if error_info exists
-    has_error_info_column_shared = True # Use a different name to avoid scope collision if functions were nested
-    try:
-        db.execute(sa.text("SELECT error_info FROM messages LIMIT 1"))
-        columns.append(Message.error_info)
-    except sa.exc.OperationalError:
-        logger.warning("error_info column not found in messages table (shared link)")
-        has_error_info_column_shared = False
     
     query = db.query(*columns).filter(Message.thread_id == shared_link.thread_id)
     if has_branch_column and branch_id:
@@ -926,7 +902,6 @@ async def get_shared_thread(
             "created_at": msg_tuple[idx + 4],
             "parent_message_id": None,
             "branch_id": None,
-            "error_info": None
         }
         idx += 5
         if has_parent_column:
@@ -934,9 +909,6 @@ async def get_shared_thread(
             idx += 1
         if has_branch_column:
             msg_dict["branch_id"] = str(msg_tuple[idx]) if msg_tuple[idx] else None
-            idx += 1
-        if has_error_info_column_shared: # Use the correct flag
-            msg_dict["error_info"] = str(msg_tuple[idx]) if msg_tuple[idx] else None
             idx += 1
         return MessageResponse(**msg_dict)
     
@@ -991,7 +963,6 @@ async def chat(
     api_key_record = db.query(APIKey).filter(
         APIKey.user_id == current_user.id,
         APIKey.provider == chat_request.provider,
-        or_(APIKey.model_name == chat_request.model_name, APIKey.model_name.in_(['*', ''])),
         APIKey.is_active == True
     ).first()
 
@@ -1025,7 +996,6 @@ async def chat(
     # Check for optional columns
     has_branch_column = hasattr(Message, 'branch_id')
     has_parent_column = hasattr(Message, 'parent_message_id')
-    has_error_info_column = hasattr(Message, 'error_info')
     
     # Build user message
     user_message_kwargs = {
@@ -1075,11 +1045,11 @@ async def chat(
     ]
     
     async def generate_response():
-        response_content = ""  # Initialize before try block
+        response_content = ""
         stream_id = chat_request.stream_id or str(uuid.uuid4())
         start_chunk = chat_request.resume_from_chunk or 0
-        generation_error_occurred = False # Renamed for clarity
-        captured_error_message = None # To store the error message
+        generation_error_occurred = False
+        captured_error_message = None
         assistant_message_saved = False
 
         if stream_id not in STREAMING_CACHE:
@@ -1087,76 +1057,151 @@ async def chat(
 
         # Handle cached chunks for resuming
         if start_chunk > 0 and stream_id in STREAMING_CACHE:
-            # If resuming, we assume previous parts were processed and saved if necessary.
-            # This simplified logic just serves the cached chunks.
-            # A more robust resume would need to check the DB state.
             for i, chunk_content in enumerate(STREAMING_CACHE[stream_id][start_chunk:], start=start_chunk):
                 yield f"data: {json.dumps({'content': chunk_content, 'chunk_index': i, 'stream_id': stream_id})}\n\n"
-                await asyncio.sleep(0.01)
-            # If we are only serving cache, we might not want to signal 'done' or save messages again.
-            # For simplicity now, we assume resume means the original stream finished or will be handled by a new call if interrupted.
+                await asyncio.sleep(0.1)
             return
 
         try:
-            model_identifier = f"{chat_request.provider}/{chat_request.model_name}"
-            response = await asyncio.to_thread(
-                litellm.completion,
-                model=model_identifier,
-                messages=conversation_history,
-                api_key=api_key,
-                stream=chat_request.stream,
-                timeout=60
-            )
-
-            # Ensure 'response' is an async generator if streaming is enabled
-            if chat_request.stream:
-                # Check if it's a regular generator and not an async generator
-                if inspect.isgenerator(response) and not inspect.isasyncgen(response):
-                    response = _as_async_generator(response)
-                # Optional: Add a log if it's already an async generator or neither
-                # elif inspect.isasyncgen(response):
-                #     logger.info("LiteLLM returned an async generator as expected.")
-                # else:
-                #     logger.warning(f"LiteLLM returned an unexpected type for streaming: {type(response)}")
-
-            if chat_request.stream:
-                async for chunk in response: # This line should now work correctly
-                    content = ""
-                    if hasattr(chunk, 'choices') and chunk.choices:
-                        delta = chunk.choices[0].delta
-                        content = delta.content if delta and delta.content else ""
-                    elif isinstance(chunk, dict) and 'choices' in chunk:
-                        delta = chunk['choices'][0].get('delta', {})
-                        content = delta.get('content', '')
-                    
-                    if content:
-                        response_content += content # Accumulate content
-                        STREAMING_CACHE[stream_id].append(content)
-                        yield f"data: {json.dumps({'content': content, 'chunk_index': len(STREAMING_CACHE[stream_id]) - 1, 'stream_id': stream_id})}\n\n"
-                        await asyncio.sleep(0.01)
-            else: # Not streaming
-                content = ""
-                if hasattr(response, 'choices') and response.choices:
-                    content = response.choices[0].message.content
-                elif isinstance(response, dict) and 'choices' in response:
-                    content = response['choices'][0]['message']['content']
+            model_identifier = f"{chat_request.model_name}".split(":")[0]
+            actual_stream = False
+            
+            # Special handling for Cohere - always non-streaming due to LiteLLM issues
+            if chat_request.provider.lower() == "cohere":
+                logger.info("Using non-streaming for Cohere")
+                response = await asyncio.to_thread(
+                    litellm.completion,
+                    model=model_identifier,
+                    messages=conversation_history,
+                    api_key=api_key,
+                    stream=False,
+                    timeout=60
+                )
                 
+                # Extract content from Cohere response
+                content = ""
+                try:
+                    # Try different ways to extract content from Cohere response
+                    if hasattr(response, 'choices') and response.choices:
+                        if hasattr(response.choices[0], 'message'):
+                            content = response.choices[0].message.content or ""
+                        elif hasattr(response.choices[0], 'text'):
+                            content = response.choices[0].text or ""
+                    elif isinstance(response, dict):
+                        if 'choices' in response and response['choices']:
+                            choice = response['choices'][0]
+                            if 'message' in choice:
+                                content = choice['message'].get('content', '')
+                            elif 'text' in choice:
+                                content = choice['text']
+                        elif 'text' in response:
+                            content = response['text']
+                    elif hasattr(response, 'text'):
+                        content = response.text or ""
+                        
+                    logger.info(f"Extracted content from Cohere: {len(content)} characters")
+                    
+                except Exception as extract_error:
+                    logger.error(f"Error extracting content from Cohere response: {extract_error}")
+                    logger.error(f"Response type: {type(response)}")
+                    logger.error(f"Response attributes: {dir(response) if hasattr(response, '__dict__') else 'No attributes'}")
+                    content = "Error: Could not extract response content"
+
                 if content:
-                    response_content = content # Accumulate content (overwrite for non-stream)
-                    STREAMING_CACHE[stream_id].append(content) # Cache for consistency, though less critical for non-stream
-                    yield f"data: {json.dumps({'content': content, 'chunk_index': 0, 'stream_id': stream_id})}\n\n"
+                    response_content = content
+                    
+                    # Simulate streaming if requested
+                    if actual_stream:
+                        words = content.split()
+                        chunk_size = max(1, len(words) // 20)  # Create ~20 chunks
+                        
+                        for i in range(0, len(words), chunk_size):
+                            chunk_words = words[i:i + chunk_size]
+                            chunk_content = " ".join(chunk_words)
+                            if i + chunk_size < len(words):
+                                chunk_content += " "
+                            
+                            STREAMING_CACHE[stream_id].append(chunk_content)
+                            yield f"data: {json.dumps({'content': chunk_content, 'chunk_index': len(STREAMING_CACHE[stream_id]) - 1, 'stream_id': stream_id})}\n\n"
+                            await asyncio.sleep(0.05)
+                    else:
+                        STREAMING_CACHE[stream_id].append(content)
+                        yield f"data: {json.dumps({'content': content, 'chunk_index': 0, 'stream_id': stream_id})}\n\n"
+                else:
+                    raise Exception("No content received from Cohere API")
+            
+            else:
+                # Handle other providers with normal streaming
+                actual_stream = False #chat_request.stream
+                response = await asyncio.to_thread(
+                    litellm.completion,
+                    model=model_identifier,
+                    messages=conversation_history,
+                    api_key=api_key,
+                    stream=actual_stream,
+                    timeout=60
+                )
+
+                if actual_stream:
+                    # Convert sync generator to async if needed
+                    if inspect.isgenerator(response):
+                        async def async_wrapper():
+                            import concurrent.futures
+                            with concurrent.futures.ThreadPoolExecutor() as executor:
+                                def get_next_chunk():
+                                    try:
+                                        return next(response)
+                                    except StopIteration:
+                                        return None
+                                
+                                while True:
+                                    chunk = await asyncio.get_event_loop().run_in_executor(executor, get_next_chunk)
+                                    if chunk is None:
+                                        break
+                                    yield chunk
+                        
+                        response = async_wrapper()
+                    
+                    # Handle the response as async generator
+                    async for chunk in response:
+                        content = ""
+                        # Standard OpenAI-compatible chunk handling
+                        if hasattr(chunk, "choices") and chunk.choices:
+                            delta = chunk.choices[0].delta
+                            content = delta.content if delta and delta.content else ""
+                        elif isinstance(chunk, dict) and "choices" in chunk:
+                            delta = chunk["choices"][0].get("delta", {})
+                            content = delta.get("content", "")
+
+                        if content:
+                            response_content += content
+                            STREAMING_CACHE[stream_id].append(content)
+                            yield f"data: {json.dumps({'content': content, 'chunk_index': len(STREAMING_CACHE[stream_id]) - 1, 'stream_id': stream_id})}\n\n"
+                            await asyncio.sleep(0.01)
+                else:
+                    # Non-streaming response for other providers
+                    content = ""
+                    if hasattr(response, "choices") and response.choices:
+                        content = response.choices[0].message.content
+                    elif isinstance(response, dict) and "choices" in response:
+                        content = response["choices"][0]["message"]["content"]
+
+                    if content:
+                        response_content = content
+                        STREAMING_CACHE[stream_id].append(content)
+                        yield f"data: {json.dumps({'content': content, 'chunk_index': 0, 'stream_id': stream_id})}\n\n"
 
         except Exception as e:
             generation_error_occurred = True
             captured_error_message = str(e)
             logger.error(f"Error in completion: {captured_error_message}")
+            logger.error(f"Exception type: {type(e)}")
             yield f"data: {json.dumps({'error': captured_error_message, 'stream_id': stream_id})}\n\n"
-            # Cache cleanup will happen in finally
-            return # Exit after error, finally block will run
+            return
 
         finally:
             # Save assistant message
-            if response_content or generation_error_occurred: # Save if there's content OR an error occurred
+            if response_content or generation_error_occurred:
                 try:
                     current_content = response_content
                     if generation_error_occurred and not response_content:
@@ -1168,44 +1213,27 @@ async def chat(
                         "content": current_content,
                         "created_at": datetime.utcnow(),
                     }
-                    if has_branch_column and chat_request.branch_id: # Check if Message model has branch_id
+                    if has_branch_column and chat_request.branch_id:
                         assistant_message_kwargs["branch_id"] = chat_request.branch_id
-                    if has_parent_column and user_message: # Check if Message model has parent_message_id and user_message exists
+                    if has_parent_column and user_message:
                         assistant_message_kwargs["parent_message_id"] = user_message.id
 
-                    if has_error_info_column and captured_error_message:
-                        assistant_message_kwargs["error_info"] = captured_error_message
+                    assistant_message = Message(**assistant_message_kwargs)
+                    db.add(assistant_message)
+                    db.commit()
+                    db.refresh(assistant_message)
+                    assistant_message_saved = True
 
-                    with db.begin_nested():
-                        assistant_message = Message(**assistant_message_kwargs)
-                        db.add(assistant_message)
-                        db.commit() # Commit assistant message first
-                        db.refresh(assistant_message)
-                        assistant_message_saved = True
-
-                    # Update thread timestamp only if assistant message was saved
+                    # Update thread timestamp
                     if assistant_message_saved:
                         thread.updated_at = datetime.utcnow()
-                        db.commit() # Commit thread update
+                        db.commit()
 
                 except Exception as db_error:
                     logger.error(f"Database save failed: {db_error}")
-                    # If streaming, this error needs to be communicated back if possible,
-                    # but finally block doesn't allow yielding. Consider logging or alternative error reporting.
-                    # For now, just log it. The client might receive a DONE message without this specific error.
-                    # If not streaming, this error will be caught by the main endpoint error handler.
-                    if chat_request.stream:
-                         # This yield won't work as we are in finally.
-                         # Consider how to report this if it's critical for streaming clients.
-                         pass
 
-            if not generation_error_occurred: # Send 'done' only if no generation error
-                 yield f"data: {json.dumps({'done': True, 'thread_id': str(thread.id), 'total_chunks': len(STREAMING_CACHE[stream_id]), 'stream_id': stream_id})}\n\n"
-            # else:
-            #    # If an error occurred, the error message should have already been yielded.
-            #    # We might send a specific "error_done" or rely on client to see the error and stop.
-            #    pass
-
+            if not generation_error_occurred:
+                yield f"data: {json.dumps({'done': True, 'thread_id': str(thread.id), 'total_chunks': len(STREAMING_CACHE[stream_id]), 'stream_id': stream_id})}\n\n"
 
             # Clean up cache
             if stream_id in STREAMING_CACHE:

@@ -57,10 +57,11 @@ interface SendMessageParams {
   thread_id?: string;
   provider: string;
   model_name: string;
-  stream?: boolean;  // Made optional to allow default
+  stream?: boolean;
   branch_id?: string;
   resume_from_chunk?: number;
   stream_id?: string;
+  api_key_id?: string; // Added to match ChatInterface.tsx
 }
 
 interface Provider {
@@ -103,10 +104,11 @@ interface ProvidersAndModelsResponse {
 interface ApiKey {
   id: string;
   provider: string;
-  model_name: string;
   key_name: string;
   is_active: boolean;
   created_at: string;
+  api_key?: string; // Optional to match backend
+  model_name?: string; // Optional, included from backend
 }
 
 interface ApiKeyCreate {
@@ -117,6 +119,14 @@ interface ApiKeyCreate {
 }
 
 export const chatApi = {
+  async getApiKeys(): Promise<ApiKey[]> {
+    try {
+      return await apiKeysApi.getApiKeys();
+    } catch (error) {
+      console.error("chatApi.getApiKeys error:", error);
+      throw error;
+    }
+  },
   async createThread({ title, provider, model_name }: { title: string; provider: string; model_name: string }): Promise<Thread> {
     const response = await fetchApi('/threads', {
       method: 'POST',
@@ -129,11 +139,10 @@ export const chatApi = {
       method: 'POST',
       body: JSON.stringify({
         ...params,
-        stream: params.stream ?? true,  // Default to true if not provided
+        stream: params.stream ?? true,
       }),
     });
   },
-
   async getThreadMessages(threadId: string, branchId?: string): Promise<Message[]> {
     const url = branchId 
       ? `/threads/${threadId}/messages?branch_id=${branchId}`
@@ -141,22 +150,18 @@ export const chatApi = {
     const response = await fetchApi(url, { method: 'GET' });
     return response.json();
   },
-
   async getProvidersAndModels(): Promise<ProvidersAndModelsResponse> {
     const response = await fetchApi('/providers-and-models', { method: 'GET' });
     return response.json();
   },
-
   async getThreads(): Promise<Thread[]> {
     const response = await fetchApi('/threads', { method: 'GET' });
     return response.json();
   },
-
   async createBranch(threadId: string, messageId: string): Promise<Thread> {
     const response = await fetchApi(`/threads/${threadId}/branch/${messageId}`, { method: 'POST' });
     return response.json();
   },
-
   async createShareLink(threadId: string, expiresInHours?: number): Promise<ShareLink> {
     const response = await fetchApi(`/threads/${threadId}/share`, {
       method: 'POST',
@@ -164,7 +169,6 @@ export const chatApi = {
     });
     return response.json();
   },
-
   async getSharedThread(linkId: string, branchId?: string): Promise<Message[]> {
     const url = branchId 
       ? `/shared/${linkId}?branch_id=${branchId}`
@@ -172,8 +176,6 @@ export const chatApi = {
     const response = await fetchApi(url, { method: 'GET' });
     return response.json();
   },
-
-  // Tool endpoints remain commented out
 };
 
 export const authApi = {
@@ -184,7 +186,6 @@ export const authApi = {
     });
     return response.json();
   },
-
   async register(email: string, password: string, confirmEmail: string) {
     if (email !== confirmEmail) {
       throw new Error('Emails do not match');
@@ -195,7 +196,6 @@ export const authApi = {
     });
     return response.json();
   },
-
   async getMe() {
     const response = await fetchApi('/auth/me', { method: 'GET' });
     return response.json();
@@ -204,10 +204,16 @@ export const authApi = {
 
 export const apiKeysApi = {
   async getApiKeys(): Promise<ApiKey[]> {
-    const response = await fetchApi('/api-keys', { method: 'GET' });
-    return response.json();
+    try {
+      const response = await fetchApi('/api-keys', { method: 'GET' });
+      const keys = await response.json();
+      console.log("apiKeysApi.getApiKeys response:", keys);
+      return keys;
+    } catch (error) {
+      console.error("apiKeysApi.getApiKeys error:", error);
+      throw error;
+    }
   },
-
   async createApiKey(data: ApiKeyCreate): Promise<ApiKey> {
     const response = await fetchApi('/api-keys', {
       method: 'POST',
@@ -215,11 +221,9 @@ export const apiKeysApi = {
     });
     return response.json();
   },
-
   async deleteApiKey(keyId: string): Promise<void> {
     await fetchApi(`/api-keys/${keyId}`, { method: 'DELETE' });
   },
-
   async getProvidersAndModels(): Promise<ProvidersAndModelsResponse> {
     return chatApi.getProvidersAndModels();
   },
