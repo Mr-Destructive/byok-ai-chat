@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 import sqlalchemy as sa
@@ -385,6 +386,12 @@ app = FastAPI(
     openapi_url="/openapi.json",
     lifespan=lifespan
 )
+
+# Mount static files (assets) from the frontend build directory
+# This needs to be AFTER app initialization but BEFORE catch-all routes
+# Adjust the path "../frontend/dist" if your frontend builds to a different relative path
+app.mount("/assets", StaticFiles(directory="../frontend/dist/assets"), name="assets")
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -1243,6 +1250,25 @@ async def chat(
             "total_chunks": total_chunks,
             "stream_id": stream_id
         }
+
+# Catch-all route to serve SPA (index.html)
+# This should be placed after all API routes and static file mounts
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    # Check if the path looks like a file request with an extension,
+    # if so, let it 404 if not found by StaticFiles or other specific routes.
+    # This helps avoid serving index.html for missing assets like .css or .js files
+    # that might not be under the /assets path.
+    if "." in full_path.split("/")[-1] and not full_path.startswith("assets/"):
+         raise HTTPException(status_code=404, detail="Not found")
+    try:
+        # Adjust the path "../frontend/dist/index.html" as needed
+        return FileResponse("../frontend/dist/index.html")
+    except RuntimeError as e:
+        # This can happen if the file doesn't exist (e.g., frontend not built)
+        logger.error(f"SPA index.html not found: {e}")
+        raise HTTPException(status_code=404, detail="SPA index.html not found. Frontend may not be built or path is incorrect.")
+
 
 # Health Check
 @app.get("/health")
